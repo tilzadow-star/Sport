@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // ============================================================
 //  SPORT-TRACKER  –  mit Golf-Majors und Sportart-Filter
@@ -277,8 +277,9 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [status, setStatus] = useState("loading");
   const [tab, setTab] = useState("termine");
-  const [hidden, setHidden] = useState(new Set());
+  const [selected, setSelected] = useState(null); // null = alle Sportarten
   const [now, setNow] = useState(new Date());
+  const touch = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
     loadAll().then((ev) => { setEvents(ev); setStatus("ok"); }).catch(() => setStatus("error"));
@@ -288,19 +289,25 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  const toggle = (k) => setHidden((prev) => {
-    const n = new Set(prev);
-    n.has(k) ? n.delete(k) : n.add(k);
-    return n;
-  });
-
   const present = Object.keys(SPORTS).filter((k) => events.some((e) => e.sport === k));
-  const visible = events.filter((e) => !hidden.has(e.sport));
-  const upcoming = visible.filter((e) => e.end >= now && e.kind !== "match");
+  // Filter: ist eine Sportart gewählt, nur diese zeigen; sonst alle
+  const base = selected ? events.filter((e) => e.sport === selected) : events;
+  const upcoming = base.filter((e) => e.end >= now && e.kind !== "match");
   const order = Object.keys(SPORTS);
-  const live = visible
+  const live = base
     .filter((e) => isLive(e, now) && e.kind !== "tournament")
     .sort((a, b) => order.indexOf(a.sport) - order.indexOf(b.sport) || a.start - b.start);
+
+  // Wischen: nach links -> Live, nach rechts -> Termine
+  const onTouchStart = (e) => { const t = e.touches[0]; touch.current = { x: t.clientX, y: t.clientY }; };
+  const onTouchEnd = (e) => {
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touch.current.x;
+    const dy = t.clientY - touch.current.y;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+      setTab(dx < 0 ? "live" : "termine");
+    }
+  };
 
   return (
     <div style={S.stage}>
@@ -315,10 +322,15 @@ export default function App() {
 
         {status === "ok" && (
           <div style={S.chips}>
+            <button onClick={() => setSelected(null)} style={S.chipAll(selected === null)}>Alle</button>
             {present.map((k) => {
-              const on = !hidden.has(k);
+              const on = selected === null || selected === k;
               return (
-                <button key={k} onClick={() => toggle(k)} style={S.chip(on)}>
+                <button
+                  key={k}
+                  onClick={() => setSelected((prev) => (prev === k ? null : k))}
+                  style={S.chip(on)}
+                >
                   <span style={S.chipSq(on, SPORTS[k].color)} />{SPORTS[k].label}
                 </button>
               );
@@ -326,10 +338,12 @@ export default function App() {
           </div>
         )}
 
-        <div style={S.scroll}>
+        <div style={S.scroll} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
           {status === "loading" && <p style={S.note}>Termine werden geladen …</p>}
           {status === "error" && <p style={S.note}>Konnte die Termine nicht laden. Verbindung prüfen und neu laden.</p>}
-          {status === "ok" && tab === "termine" && <Termine events={upcoming} now={now} />}
+          {status === "ok" && tab === "termine" && (
+            <Termine events={upcoming} now={now} onOpenLive={() => setTab("live")} />
+          )}
           {status === "ok" && tab === "live" && (
             <Live events={live} next={upcoming.find((e) => !isLive(e, now))} />
           )}
@@ -344,7 +358,7 @@ export default function App() {
   );
 }
 
-function Termine({ events, now }) {
+function Termine({ events, now, onOpenLive }) {
   if (!events.length) return <p style={S.note}>Keine anstehenden Veranstaltungen.</p>;
   let lastDay = "";
   return (
@@ -357,7 +371,10 @@ function Termine({ events, now }) {
         return (
           <div key={e.id}>
             {showDay && <div style={S.dayLabel}>{d}</div>}
-            <div style={S.row}>
+            <div
+              style={{ ...S.row, ...(live ? { cursor: "pointer" } : null) }}
+              onClick={live ? onOpenLive : undefined}
+            >
               <span style={{ ...S.rule, background: s.color }} />
               <span style={S.main}>
                 <span style={S.eyebrow(s.color)}>{s.label}</span>
@@ -439,6 +456,11 @@ const S = {
   headLive: { display: "inline-flex", alignItems: "center", gap: 6, color: C.live, fontSize: 11, fontWeight: 700, letterSpacing: ".04em" },
 
   chips: { display: "flex", gap: 16, overflowX: "auto", padding: "0 16px 14px", flexShrink: 0 },
+  chipAll: (on) => ({
+    background: "none", border: "none", padding: 0, cursor: "pointer", whiteSpace: "nowrap",
+    fontFamily: C.body, fontSize: 11, fontWeight: 700, letterSpacing: ".04em", textTransform: "uppercase",
+    color: on ? C.ink : C.faint,
+  }),
   chip: (on) => ({
     display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap",
     background: "none", border: "none", padding: 0, cursor: "pointer",
@@ -455,10 +477,10 @@ const S = {
   row: { display: "grid", gridTemplateColumns: "4px 1fr auto", alignItems: "center", gap: 12,
          padding: "12px 16px", borderBottom: `1px solid ${C.line}` },
   rule: { alignSelf: "stretch", minHeight: 34 },
-  main: { display: "flex", flexDirection: "column", minWidth: 0 },
-  eyebrow: (color) => ({ fontSize: 10, fontWeight: 700, letterSpacing: ".09em", textTransform: "uppercase", color }),
-  title: { fontSize: 15, fontWeight: 600, color: C.ink, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center" },
-  sub: { fontSize: 11.5, color: C.muted, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  main: { display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0, width: "100%", textAlign: "left" },
+  eyebrow: (color) => ({ fontSize: 10, fontWeight: 700, letterSpacing: ".09em", textTransform: "uppercase", color, textAlign: "left" }),
+  title: { fontSize: 15, fontWeight: 600, color: C.ink, marginTop: 3, width: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", justifyContent: "flex-start", textAlign: "left" },
+  sub: { fontSize: 11.5, color: C.muted, marginTop: 2, width: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left" },
   badge: { fontSize: 9, fontWeight: 700, letterSpacing: ".04em", textTransform: "uppercase", color: "#fff", background: C.ink, padding: "2px 5px", marginLeft: 8, flexShrink: 0 },
   right: { fontSize: 14, fontWeight: 500, color: "#555", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", textAlign: "right" },
   live: { display: "inline-flex", alignItems: "center", gap: 6, color: C.live, fontSize: 12, fontWeight: 700, letterSpacing: ".04em", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
@@ -476,7 +498,7 @@ const S = {
   tabs: { display: "flex", borderTop: `2px solid ${C.rule}`, background: "#FFFFFF", paddingBottom: "env(safe-area-inset-bottom)" },
   tab: (on) => ({
     flex: 1, background: "none", border: "none", cursor: "pointer",
-    color: on ? C.ink : C.faint, fontFamily: C.body, fontSize: 11, fontWeight: 700,
-    letterSpacing: ".06em", textTransform: "uppercase", padding: "14px 0",
+    color: on ? C.ink : C.faint, fontFamily: C.body, fontSize: 14, fontWeight: 700,
+    letterSpacing: ".05em", textTransform: "uppercase", padding: "18px 0",
   }),
 };
