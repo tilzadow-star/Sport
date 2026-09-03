@@ -113,7 +113,11 @@ async function getTennis() {
           if (c.status?.type?.state !== "in") continue;
           const cs = c.competitors ?? [];
           if (cs.length < 2) continue;
-          const nameOf = (p) => p.athlete?.shortName || p.athlete?.displayName || "?";
+          // Einzel-Spieler auflösen; fehlt ein Name (z. B. Doppel/unklare Paarung), Match überspringen
+          const nameOf = (p) => p.athlete?.shortName || p.athlete?.displayName || p.athlete?.lastName || null;
+          const n1 = nameOf(cs[0]);
+          const n2 = nameOf(cs[1]);
+          if (!n1 || !n2) continue;
           const sets = (cs[0].linescores || []).map((ls, i) => {
             const a = Math.trunc(ls.value ?? 0);
             const b = Math.trunc(cs[1].linescores?.[i]?.value ?? 0);
@@ -121,7 +125,7 @@ async function getTennis() {
           }).join("  ");
           liveMatches.push({
             id: "tenm-" + c.id, sport: "tennis", kind: "match", liveOnly: true,
-            title: `${nameOf(cs[0])} – ${nameOf(cs[1])}`,
+            title: `${n1} – ${n2}`,
             subtitle: `${ev.name}${c.round?.displayName ? " · " + c.round.displayName : ""}`,
             start: new Date(c.startDate || c.date),
             end: new Date(Date.now() + 3 * 3600e3),
