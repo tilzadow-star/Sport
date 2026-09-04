@@ -11,13 +11,13 @@ import { useState, useEffect, useRef } from "react";
 // ============================================================
 
 const SPORTS = {
-  f1:        { label: "Formel 1",  color: "#B8892F" },
-  fussball:  { label: "Fußball",   color: "#2E7D5B" },
-  tennis:    { label: "Tennis",    color: "#6F7F33" },
-  golf:      { label: "Golf",      color: "#2F6E66" },
-  darts:     { label: "Darts",     color: "#A24236" },
-  biathlon:  { label: "Biathlon",  color: "#3E6A99" },
-  triathlon: { label: "Triathlon", color: "#3D8AA0" },
+  f1:        { label: "Formel 1",  color: "#A8802E" },
+  fussball:  { label: "Fußball",   color: "#2C6E53" },
+  tennis:    { label: "Tennis",    color: "#66752F" },
+  golf:      { label: "Golf",      color: "#2C645E" },
+  darts:     { label: "Darts",     color: "#97392F" },
+  biathlon:  { label: "Biathlon",  color: "#39608A" },
+  triathlon: { label: "Triathlon", color: "#367C90" },
 };
 
 // ---- QUELLE 1: Formel 1 ----
@@ -66,12 +66,18 @@ async function getFootball() {
       const matches = await r.json();
       const events = matches.map((m) => {
         const start = new Date(m.matchDateTimeUTC || m.matchDateTime);
+        const t1 = m.team1.shortName || m.team1.teamName;
+        const t2 = m.team2.shortName || m.team2.teamName;
+        const sc = scoreOf(m);
+        const [g1, g2] = sc ? sc.split(":") : ["", ""];
         return {
           id: "fb-" + m.matchID, sport: "fussball",
-          title: `${m.team1.shortName || m.team1.teamName} – ${m.team2.shortName || m.team2.teamName}`,
+          title: `${t1} – ${t2}`, comp: t.label,
           subtitle: `${t.label}${m.group?.groupName ? " · " + m.group.groupName : ""}`,
+          rows: [{ name: t1, score: g1 }, { name: t2, score: g2 }],
+          note: m.group?.groupName || "",
           start, end: new Date(start.getTime() + 2.5 * 3600e3),
-          finished: m.matchIsFinished, score: scoreOf(m),
+          finished: m.matchIsFinished, score: sc,
           matchday: m.group?.groupOrderID ?? 999, // Spieltag / Runde
         };
       });
@@ -118,15 +124,19 @@ async function getTennis() {
           const n1 = nameOf(cs[0]);
           const n2 = nameOf(cs[1]);
           if (!n1 || !n2) continue;
+          const setStr = (p) => (p.linescores || []).map((ls) => Math.trunc(ls.value ?? 0)).join("  ");
           const sets = (cs[0].linescores || []).map((ls, i) => {
             const a = Math.trunc(ls.value ?? 0);
             const b = Math.trunc(cs[1].linescores?.[i]?.value ?? 0);
             return `${a}-${b}`;
           }).join("  ");
+          const round = c.round?.displayName;
+          const label = `${ev.name}${round ? " · " + round : ""}`;
           liveMatches.push({
             id: "tenm-" + c.id, sport: "tennis", kind: "match", liveOnly: true,
-            title: `${n1} – ${n2}`,
-            subtitle: `${ev.name}${c.round?.displayName ? " · " + c.round.displayName : ""}`,
+            title: `${n1} – ${n2}`, comp: label, subtitle: label,
+            rows: [{ name: n1, score: setStr(cs[0]) }, { name: n2, score: setStr(cs[1]) }],
+            note: round || ev.name,
             start: new Date(c.startDate || c.date),
             end: new Date(Date.now() + 3 * 3600e3),
             score: sets || "läuft",
@@ -277,11 +287,18 @@ function isLive(e, now) {
   return now <= e.end;
 }
 
+const dayLabel = (d, now) => {
+  const wd = d.toLocaleDateString("de-DE", { weekday: "short" }).replace(".", "").toUpperCase();
+  const mon = d.toLocaleDateString("de-DE", { month: "short" }).replace(".", "").toUpperCase();
+  const isToday = d.toDateString() === now.toDateString();
+  return `${isToday ? "HEUTE · " : ""}${wd} ${d.getDate()}. ${mon}`;
+};
+
 export default function App() {
   const [events, setEvents] = useState([]);
   const [status, setStatus] = useState("loading");
   const [tab, setTab] = useState("termine");
-  const [selected, setSelected] = useState(null); // null = alle Sportarten
+  const [selected, setSelected] = useState(null);
   const [now, setNow] = useState(new Date());
   const touch = useRef({ x: 0, y: 0 });
 
@@ -294,7 +311,6 @@ export default function App() {
   }, []);
 
   const present = Object.keys(SPORTS).filter((k) => events.some((e) => e.sport === k));
-  // Filter: ist eine Sportart gewählt, nur diese zeigen; sonst alle
   const base = selected ? events.filter((e) => e.sport === selected) : events;
   const upcoming = base.filter((e) => e.end >= now && e.kind !== "match");
   const order = Object.keys(SPORTS);
@@ -302,15 +318,11 @@ export default function App() {
     .filter((e) => isLive(e, now) && e.kind !== "tournament")
     .sort((a, b) => order.indexOf(a.sport) - order.indexOf(b.sport) || a.start - b.start);
 
-  // Wischen: nach links -> Live, nach rechts -> Termine
   const onTouchStart = (e) => { const t = e.touches[0]; touch.current = { x: t.clientX, y: t.clientY }; };
   const onTouchEnd = (e) => {
     const t = e.changedTouches[0];
-    const dx = t.clientX - touch.current.x;
-    const dy = t.clientY - touch.current.y;
-    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      setTab(dx < 0 ? "live" : "termine");
-    }
+    const dx = t.clientX - touch.current.x, dy = t.clientY - touch.current.y;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) setTab(dx < 0 ? "live" : "termine");
   };
 
   return (
@@ -318,9 +330,9 @@ export default function App() {
       <style>{FONT + GLOBAL + KEYS}</style>
       <div style={S.phone}>
         <div style={S.head}>
-          <span style={S.brand}>Startzeit</span>
+          <span style={S.brand}>{tab === "termine" ? "Startzeit" : "Live"}</span>
           {live.length > 0 && (
-            <span style={S.headLive}><i style={S.liveSq} />{live.length} live</span>
+            <span style={S.counter}><i style={S.liveDot} />{live.length} live</span>
           )}
         </div>
 
@@ -328,14 +340,12 @@ export default function App() {
           <div style={S.chips}>
             <button onClick={() => setSelected(null)} style={S.chipAll(selected === null)}>Alle</button>
             {present.map((k) => {
-              const on = selected === null || selected === k;
+              const on = selected === k;
+              const dim = selected !== null && selected !== k;
               return (
-                <button
-                  key={k}
-                  onClick={() => setSelected((prev) => (prev === k ? null : k))}
-                  style={S.chip(on)}
-                >
-                  <span style={S.chipSq(on, SPORTS[k].color)} />{SPORTS[k].label}
+                <button key={k} onClick={() => setSelected((prev) => (prev === k ? null : k))}
+                  style={S.chip(on, dim, SPORTS[k].color)}>
+                  <i style={{ ...S.chipDot, background: SPORTS[k].color }} />{SPORTS[k].label}
                 </button>
               );
             })}
@@ -364,35 +374,45 @@ export default function App() {
 
 function Termine({ events, now, onOpenLive }) {
   if (!events.length) return <p style={S.note}>Keine anstehenden Veranstaltungen.</p>;
-  let lastDay = "";
+  let lastKey = "";
   return (
-    <div>
+    <div style={{ paddingTop: 2 }}>
       {events.map((e) => {
         const s = SPORTS[e.sport];
-        const d = day(e.start);
-        const showDay = d !== lastDay; lastDay = d;
+        const key = e.start.toDateString();
+        const showDay = key !== lastKey;
+        const first = lastKey === "";
+        lastKey = key;
         const live = isLive(e, now);
         return (
           <div key={e.id}>
-            {showDay && <div style={S.dayLabel}>{d}</div>}
-            <div
-              style={{ ...S.row, ...(live ? { cursor: "pointer" } : null) }}
-              onClick={live ? onOpenLive : undefined}
-            >
-              <span style={{ ...S.rule, background: s.color }} />
-              <span style={S.main}>
-                <span style={S.eyebrow(s.color)}>{s.label}</span>
-                <span style={S.title}>
-                  {e.title}
+            {showDay && (
+              <div style={{ ...S.dayLabel, marginTop: first ? 6 : 18 }}>{dayLabel(e.start, now)}</div>
+            )}
+            <div style={{ ...S.card, ...(live ? { cursor: "pointer" } : null) }}
+              onClick={live ? onOpenLive : undefined}>
+              <div style={S.cardTop}>
+                <span style={S.pillWrap}>
+                  <span style={{ ...S.pill, background: s.color + "1A", color: s.color }}>
+                    <i style={{ ...S.pillDot, background: s.color }} />{s.label}
+                  </span>
                   {e.major && <span style={S.badge}>{e.badgeLabel}</span>}
                 </span>
-                <span style={S.sub}>{e.subtitle}</span>
-              </span>
-              {live
-                ? <span style={S.live}><i style={S.liveSq} />{e.score || "LIVE"}</span>
-                : e.score
-                  ? <span style={{ ...S.right, color: C.muted }}>{e.score}</span>
-                  : <span style={S.right}>{time(e.start)}</span>}
+                <span style={S.rightCol}>
+                  {live ? (
+                    <>
+                      {e.score && <span style={S.time}>{e.score}</span>}
+                      <span style={S.livePill}><i style={S.liveDot} />LIVE</span>
+                    </>
+                  ) : e.score ? (
+                    <span style={{ ...S.time, color: C.grey }}>{e.score}</span>
+                  ) : (
+                    <span style={S.time}>{time(e.start)}</span>
+                  )}
+                </span>
+              </div>
+              <div style={S.cardTitle}>{e.title}</div>
+              <div style={S.cardSub}>{e.subtitle}</div>
             </div>
           </div>
         );
@@ -407,28 +427,38 @@ function Live({ events, next }) {
       <div style={S.empty}>
         <p style={S.emptyBig}>Gerade läuft nichts.</p>
         {next && (
-          <p style={S.emptySub}>
-            Als Nächstes: {next.title} — {day(next.start)}, {time(next.start)} Uhr
-          </p>
+          <p style={S.emptySub}>Als Nächstes: {next.title} — {day(next.start)}, {time(next.start)} Uhr</p>
         )}
       </div>
     );
   }
   return (
-    <div>
+    <div style={{ paddingTop: 2 }}>
       {events.map((e) => {
         const s = SPORTS[e.sport];
+        const comp = e.comp || e.subtitle || s.label;
         return (
-          <div key={e.id} style={{ ...S.liveCard, borderLeftColor: s.color }}>
+          <div key={e.id} style={S.liveCard}>
             <div style={S.liveTop}>
-              <span style={S.eyebrow(s.color)}>{s.label}</span>
-              <span style={S.live}><i style={S.liveSq} />LIVE</span>
+              <span style={{ ...S.pill, background: s.color + "1A", color: s.color }}>
+                <i style={{ ...S.pillDot, background: s.color }} />{comp}
+              </span>
+              <span style={S.livePill}><i style={S.liveDot} />LIVE</span>
             </div>
-            <div style={S.title}>{e.title}</div>
-            <div style={S.sub}>{e.subtitle}</div>
-            {e.score
-              ? <p style={S.liveScore}>{e.score}</p>
-              : <p style={S.livePlaceholder}>Läuft – noch kein Ergebnis</p>}
+            {e.rows ? (
+              e.rows.map((r, i) => (
+                <div key={i} style={{ ...S.liveRow, marginTop: i === 0 ? 16 : 12 }}>
+                  <span style={S.liveName}>{r.name}</span>
+                  <span style={S.liveStand}>{r.score}</span>
+                </div>
+              ))
+            ) : (
+              <div style={{ ...S.liveRow, marginTop: 16 }}>
+                <span style={S.liveName}>{e.title}</span>
+                <span style={S.liveStand}>{e.score}</span>
+              </div>
+            )}
+            {e.note && <div style={S.liveNote}>{e.note}</div>}
           </div>
         );
       })}
@@ -437,72 +467,89 @@ function Live({ events, next }) {
 }
 
 // ============================================================
-//  STYLES  –  "Schweizer Raster": weiß, klare Linien, Farbe nur als Signal
+//  STYLES  –  Design 4a "Kachel"
 // ============================================================
-const FONT = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');`;
-const KEYS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}`;
-const GLOBAL = `*{box-sizing:border-box}html,body,#root{margin:0;padding:0;height:100%;background:#FFFFFF;}`;
+const FONT = `@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');`;
+const KEYS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}`;
+const GLOBAL = `*{box-sizing:border-box}html,body,#root{margin:0;padding:0;min-height:100%;background:#F4F4F1;}`;
 
 const C = {
-  bg: "#FFFFFF", ink: "#111111", muted: "#9A9A9A", faint: "#C9C9C9",
-  line: "#ECECEC", rule: "#111111", live: "#C23B22",
-  body: "'Inter', system-ui, -apple-system, sans-serif",
+  bg: "#F4F4F1", card: "#FFFFFF", ink: "#16161A", grey: "#6F6E6A", border: "#E4E3DF",
+  live: "#D8402B", liveInk: "#B8321F", liveTint: "#FBEAE7",
+  body: "'Manrope', system-ui, -apple-system, sans-serif",
 };
 
 const S = {
-  stage: { background: "#FFFFFF", minHeight: "100dvh", display: "flex", justifyContent: "center", fontFamily: C.body },
+  stage: { background: C.bg, minHeight: "100dvh", display: "flex", justifyContent: "center", fontFamily: C.body },
   phone: {
-    width: "100%", maxWidth: 480, minHeight: "100dvh", background: C.bg,
+    position: "relative", width: "100%", maxWidth: 480, minHeight: "100dvh", background: C.bg,
     display: "flex", flexDirection: "column", overflow: "hidden", color: C.ink,
   },
-  head: { display: "flex", alignItems: "baseline", justifyContent: "space-between", padding: "calc(20px + env(safe-area-inset-top)) 16px 12px" },
-  brand: { fontSize: 19, fontWeight: 700, letterSpacing: "-.01em" },
-  headLive: { display: "inline-flex", alignItems: "center", gap: 6, color: C.live, fontSize: 11, fontWeight: 700, letterSpacing: ".04em" },
 
-  chips: { display: "flex", gap: 16, overflowX: "auto", padding: "0 16px 14px", flexShrink: 0 },
-  chipAll: (on) => ({
-    background: "none", border: "none", padding: 0, cursor: "pointer", whiteSpace: "nowrap",
-    fontFamily: C.body, fontSize: 11, fontWeight: 700, letterSpacing: ".04em", textTransform: "uppercase",
-    color: on ? C.ink : C.faint,
-  }),
-  chip: (on) => ({
-    display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap",
-    background: "none", border: "none", padding: 0, cursor: "pointer",
-    fontFamily: C.body, fontSize: 11, fontWeight: 600, letterSpacing: ".04em", textTransform: "uppercase",
-    color: on ? C.ink : C.faint,
-  }),
-  chipSq: (on, color) => ({ width: 9, height: 9, background: on ? color : C.faint, flexShrink: 0 }),
+  head: { display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "calc(20px + env(safe-area-inset-top)) 20px 12px" },
+  brand: { fontSize: 27, lineHeight: "27px", fontWeight: 700, letterSpacing: "-0.035em" },
+  counter: { display: "inline-flex", alignItems: "center", gap: 7, background: C.card,
+             border: `1px solid ${C.border}`, borderRadius: 999, padding: "6px 12px",
+             fontSize: 12, fontWeight: 600, letterSpacing: "-0.005em" },
 
-  scroll: { flex: 1, overflowY: "auto" },
-  note: { color: C.muted, fontSize: 14, padding: "24px 16px", lineHeight: 1.5 },
-  dayLabel: { fontSize: 11, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: C.ink,
-              padding: "16px 16px 8px", borderTop: `2px solid ${C.rule}`, marginTop: 2 },
+  chips: { display: "flex", gap: 8, overflowX: "auto", padding: "6px 16px 14px", flexShrink: 0 },
+  chipAll: (on) => ({ flexShrink: 0, cursor: "pointer", borderRadius: 999, padding: "8px 13px",
+    fontFamily: C.body, fontSize: 11, fontWeight: 700, letterSpacing: "0.03em", textTransform: "uppercase",
+    border: `1px solid ${C.border}`, background: C.card, color: on ? C.ink : C.grey }),
+  chip: (on, dim, color) => ({ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap",
+    flexShrink: 0, cursor: "pointer", borderRadius: 999, padding: "8px 13px",
+    fontFamily: C.body, fontSize: 11, fontWeight: 700, letterSpacing: "0.03em", textTransform: "uppercase",
+    border: `1px solid ${on ? color : C.border}`, background: on ? color + "1A" : C.card,
+    color: on ? color : C.ink, opacity: dim ? 0.45 : 1 }),
+  chipDot: { width: 7, height: 7, borderRadius: "50%", flexShrink: 0 },
 
-  row: { display: "grid", gridTemplateColumns: "4px 1fr auto", alignItems: "center", gap: 12,
-         padding: "12px 16px", borderBottom: `1px solid ${C.line}` },
-  rule: { alignSelf: "stretch", minHeight: 34 },
-  main: { display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0, width: "100%", textAlign: "left" },
-  eyebrow: (color) => ({ fontSize: 10, fontWeight: 700, letterSpacing: ".09em", textTransform: "uppercase", color, textAlign: "left" }),
-  title: { fontSize: 15, fontWeight: 600, color: C.ink, marginTop: 3, width: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "flex", alignItems: "center", justifyContent: "flex-start", textAlign: "left" },
-  sub: { fontSize: 11.5, color: C.muted, marginTop: 2, width: "100%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left" },
-  badge: { fontSize: 9, fontWeight: 700, letterSpacing: ".04em", textTransform: "uppercase", color: "#fff", background: C.ink, padding: "2px 5px", marginLeft: 8, flexShrink: 0 },
-  right: { fontSize: 14, fontWeight: 500, color: "#555", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap", textAlign: "right" },
-  live: { display: "inline-flex", alignItems: "center", gap: 6, color: C.live, fontSize: 12, fontWeight: 700, letterSpacing: ".04em", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" },
-  liveSq: { width: 7, height: 7, background: C.live, display: "inline-block", animation: "pulse 1.4s infinite" },
+  scroll: { flex: 1, overflowY: "auto", padding: "0 16px 110px" },
+  note: { color: C.grey, fontSize: 14, padding: "24px 4px", lineHeight: 1.5 },
 
-  empty: { textAlign: "center", padding: "60px 24px" },
-  emptyBig: { fontSize: 18, fontWeight: 700, margin: "0 0 8px", color: C.ink },
-  emptySub: { color: C.muted, fontSize: 13.5, lineHeight: 1.5 },
+  dayLabel: { fontSize: 12.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+              color: C.grey, marginBottom: 2, marginLeft: 4 },
 
-  liveCard: { border: `1px solid ${C.line}`, borderLeft: "4px solid #000", padding: "13px 14px", margin: "12px 16px 0" },
+  card: { background: C.card, borderRadius: 18, boxShadow: "0 1px 2px rgba(22,22,26,.05)",
+          padding: "15px 16px 16px", marginBottom: 8 },
+  cardTop: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
+  pillWrap: { display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 },
+  pill: { display: "inline-flex", alignItems: "center", gap: 6, borderRadius: 999, padding: "4px 9px",
+          fontSize: 11, fontWeight: 700, letterSpacing: "0.03em", textTransform: "uppercase", whiteSpace: "nowrap" },
+  pillDot: { width: 7, height: 7, borderRadius: "50%", flexShrink: 0 },
+  badge: { fontSize: 11, fontWeight: 600, letterSpacing: "-0.005em", color: C.grey, whiteSpace: "nowrap" },
+  rightCol: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 },
+  time: { fontSize: 22, lineHeight: "24px", fontWeight: 700, letterSpacing: "-0.035em",
+          fontVariantNumeric: "tabular-nums", color: C.ink, whiteSpace: "nowrap" },
+  livePill: { display: "inline-flex", alignItems: "center", gap: 5, background: C.liveTint, color: C.liveInk,
+              borderRadius: 999, padding: "3px 8px", fontSize: 10.5, fontWeight: 700,
+              letterSpacing: "0.04em", textTransform: "uppercase" },
+  liveDot: { width: 6, height: 6, borderRadius: "50%", background: C.live, display: "inline-block",
+             animation: "pulse 1.4s infinite" },
+  cardTitle: { fontSize: 17, lineHeight: "22px", fontWeight: 600, letterSpacing: "-0.022em",
+               color: C.ink, marginTop: 12 },
+  cardSub: { fontSize: 13, lineHeight: "18px", fontWeight: 500, letterSpacing: "-0.005em",
+             color: C.grey, marginTop: 4 },
+
+  empty: { textAlign: "center", padding: "70px 24px" },
+  emptyBig: { fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em", margin: "0 0 8px", color: C.ink },
+  emptySub: { color: C.grey, fontSize: 14, lineHeight: 1.5 },
+
+  liveCard: { background: C.card, borderRadius: 22, boxShadow: "0 1px 2px rgba(22,22,26,.05)",
+              padding: "18px 20px", marginBottom: 12 },
   liveTop: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 },
-  liveScore: { fontSize: 26, fontWeight: 700, margin: "10px 0 0", fontVariantNumeric: "tabular-nums", color: C.ink },
-  livePlaceholder: { color: C.muted, fontSize: 13, margin: "10px 0 0" },
+  liveRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  liveName: { fontSize: 18, lineHeight: "23px", fontWeight: 600, letterSpacing: "-0.02em", color: C.ink,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  liveStand: { fontSize: 32, lineHeight: "32px", fontWeight: 700, letterSpacing: "-0.04em",
+               fontVariantNumeric: "tabular-nums", color: C.ink, whiteSpace: "nowrap", flexShrink: 0 },
+  liveNote: { fontSize: 13, lineHeight: "18px", fontWeight: 500, letterSpacing: "-0.005em",
+              color: C.grey, marginTop: 16 },
 
-  tabs: { display: "flex", borderTop: `2px solid ${C.rule}`, background: "#FFFFFF", paddingBottom: "env(safe-area-inset-bottom)" },
-  tab: (on) => ({
-    flex: 1, background: "none", border: "none", cursor: "pointer",
-    color: on ? C.ink : C.faint, fontFamily: C.body, fontSize: 14, fontWeight: 700,
-    letterSpacing: ".05em", textTransform: "uppercase", padding: "18px 0",
-  }),
+  tabs: { position: "absolute", left: 16, right: 16, bottom: "calc(22px + env(safe-area-inset-bottom))",
+          display: "flex", background: C.card, borderRadius: 999, padding: 5,
+          boxShadow: "0 4px 16px -6px rgba(22,22,26,.16)" },
+  tab: (on) => ({ flex: 1, textAlign: "center", cursor: "pointer", border: "none", borderRadius: 999,
+    padding: "11px 0", fontFamily: C.body, fontSize: 13.5, fontWeight: 600, letterSpacing: "-0.01em",
+    background: on ? C.ink : "transparent", color: on ? "#fff" : C.grey }),
 };
