@@ -11,13 +11,13 @@ import { useState, useEffect, useRef } from "react";
 // ============================================================
 
 const SPORTS = {
-  f1:        { label: "Formel 1",  color: "#A8802E" },
-  fussball:  { label: "Fußball",   color: "#2C6E53" },
-  tennis:    { label: "Tennis",    color: "#66752F" },
-  golf:      { label: "Golf",      color: "#2C645E" },
-  darts:     { label: "Darts",     color: "#97392F" },
-  biathlon:  { label: "Biathlon",  color: "#39608A" },
-  triathlon: { label: "Triathlon", color: "#367C90" },
+  f1:        { label: "Formel 1",  color: "#D89A2C" },
+  fussball:  { label: "Fußball",   color: "#1E9E68" },
+  tennis:    { label: "Tennis",    color: "#7AA92E" },
+  golf:      { label: "Golf",      color: "#159A93" },
+  darts:     { label: "Darts",     color: "#DC4A38" },
+  biathlon:  { label: "Biathlon",  color: "#3B78D6" },
+  triathlon: { label: "Triathlon", color: "#1FA3B8" },
 };
 
 // ---- QUELLE 1: Formel 1 ----
@@ -387,14 +387,19 @@ function Termine({ events, now, onOpenLive }) {
         return (
           <div key={e.id}>
             {showDay && (
-              <div style={{ ...S.dayLabel, marginTop: first ? 6 : 18 }}>{dayLabel(e.start, now)}</div>
+              <div style={{
+                ...S.dayLabel,
+                ...(first
+                  ? { marginTop: 4 }
+                  : { marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.border}` }),
+              }}>{dayLabel(e.start, now)}</div>
             )}
             <div style={{ ...S.card, ...(live ? { cursor: "pointer" } : null) }}
               onClick={live ? onOpenLive : undefined}>
               <div style={S.cardTop}>
                 <span style={S.pillWrap}>
-                  <span style={{ ...S.pill, background: s.color + "1A", color: s.color }}>
-                    <i style={{ ...S.pillDot, background: s.color }} />{s.label}
+                  <span style={{ ...S.pill, background: s.color, color: "#fff" }}>
+                    <i style={{ ...S.pillDot, background: "#fff" }} />{s.label}
                   </span>
                   {e.major && <span style={S.badge}>{e.badgeLabel}</span>}
                 </span>
@@ -440,8 +445,8 @@ function Live({ events, next }) {
         return (
           <div key={e.id} style={S.liveCard}>
             <div style={S.liveTop}>
-              <span style={{ ...S.pill, background: s.color + "1A", color: s.color }}>
-                <i style={{ ...S.pillDot, background: s.color }} />{comp}
+              <span style={{ ...S.pill, background: s.color, color: "#fff" }}>
+                <i style={{ ...S.pillDot, background: "#fff" }} />{comp}
               </span>
               <span style={S.livePill}><i style={S.liveDot} />LIVE</span>
             </div>
@@ -471,7 +476,7 @@ function Live({ events, next }) {
 // ============================================================
 const FONT = `@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');`;
 const KEYS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}`;
-const GLOBAL = `*{box-sizing:border-box}html,body,#root{margin:0;padding:0;min-height:100%;background:#F4F4F1;}`;
+const GLOBAL = `*{box-sizing:border-box}html,body,#root{margin:0;padding:0;min-height:100%;background:#F4F4F1;text-align:left;}`;
 
 const C = {
   bg: "#F4F4F1", card: "#FFFFFF", ink: "#16161A", grey: "#6F6E6A", border: "#E4E3DF",
@@ -482,8 +487,8 @@ const C = {
 const S = {
   stage: { background: C.bg, minHeight: "100dvh", display: "flex", justifyContent: "center", fontFamily: C.body },
   phone: {
-    position: "relative", width: "100%", maxWidth: 480, minHeight: "100dvh", background: C.bg,
-    display: "flex", flexDirection: "column", overflow: "hidden", color: C.ink,
+    position: "relative", width: "100%", maxWidth: 480, height: "100dvh", background: C.bg,
+    display: "flex", flexDirection: "column", overflow: "hidden", color: C.ink, textAlign: "left",
   },
 
   head: { display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -504,11 +509,11 @@ const S = {
     color: on ? color : C.ink, opacity: dim ? 0.45 : 1 }),
   chipDot: { width: 7, height: 7, borderRadius: "50%", flexShrink: 0 },
 
-  scroll: { flex: 1, overflowY: "auto", padding: "0 16px 110px" },
+  scroll: { flex: 1, minHeight: 0, overflowY: "auto", padding: "0 16px 110px" },
   note: { color: C.grey, fontSize: 14, padding: "24px 4px", lineHeight: 1.5 },
 
   dayLabel: { fontSize: 12.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
-              color: C.grey, marginBottom: 2, marginLeft: 4 },
+              color: C.grey, marginBottom: 8, paddingLeft: 2 },
 
   card: { background: C.card, borderRadius: 18, boxShadow: "0 1px 2px rgba(22,22,26,.05)",
           padding: "15px 16px 16px", marginBottom: 8 },
