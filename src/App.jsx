@@ -164,6 +164,36 @@ const TENNIS_TOURNEYS = [
 ];
 const tennisTourney = (name) => TENNIS_TOURNEYS.find((t) => t.rx.test(name || ""));
 
+// Rundennamen auf Deutsch
+function roundDe(name = "") {
+  if (/^final$/i.test(name)) return "Finale";
+  if (/semi/i.test(name)) return "Halbfinale";
+  if (/quarter/i.test(name)) return "Viertelfinale";
+  if (/round of 16|4th round|fourth round/i.test(name)) return "Achtelfinale";
+  const m = name.match(/round\s*(\d+)|(\d+)(?:st|nd|rd|th)\s*round/i);
+  if (m) return `${m[1] || m[2]}. Runde`;
+  return name;
+}
+// Turnierbaum-Eintrag aus einem ESPN-Match bauen (nur Einzel, keine Qualifikation)
+function drawMatch(c) {
+  const cs = [...(c.competitors ?? [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  if (cs.length < 2) return null;
+  const nameOf = (p) => p.athlete?.displayName || p.athlete?.shortName || "N. N.";
+  return {
+    id: c.id,
+    round: roundDe(c.round?.displayName),
+    roundId: Number(c.round?.id) || 0,
+    start: new Date(c.startDate || c.date),
+    state: c.status?.type?.state || "pre", // pre | in | post
+    detail: c.status?.type?.shortDetail || "",
+    players: cs.map((p) => ({
+      name: nameOf(p),
+      winner: !!p.winner,
+      sets: (p.linescores || []).map((ls) => Math.trunc(ls.value ?? 0)),
+    })),
+  };
+}
+
 async function getTennis() {
   const tours = ["atp", "wta"];
   const tournaments = new Map();
@@ -184,9 +214,21 @@ async function getTennis() {
           id: "ten-" + ev.id, sport: "tennis", kind: "tournament", tkey: tt.key,
           title: tt.title, subtitle: `${tt.badge} · ${tt.city}`,
           start, end, major: true, badgeLabel: tt.badge,
+          draw: { Herren: [], Damen: [] },
         });
       }
+      const tour_ = tournaments.get(tt.key);
       for (const g of ev.groupings ?? []) {
+        // Turnierbaum: Herren-/Dameneinzel, ohne Qualifikation
+        const slug = g.grouping?.slug || "";
+        const side = slug === "mens-singles" ? "Herren" : slug === "womens-singles" ? "Damen" : null;
+        if (side) {
+          for (const c of g.competitions ?? []) {
+            if (/qualif/i.test(c.round?.displayName || "")) continue;
+            const dm = drawMatch(c);
+            if (dm && !tour_.draw[side].some((x) => x.id === dm.id)) tour_.draw[side].push(dm);
+          }
+        }
         for (const c of g.competitions ?? []) {
           if (c.status?.type?.state !== "in") continue;
           const cs = c.competitors ?? [];
@@ -202,7 +244,7 @@ async function getTennis() {
             const b = Math.trunc(cs[1].linescores?.[i]?.value ?? 0);
             return `${a}-${b}`;
           }).join("  ");
-          const round = c.round?.displayName;
+          const round = roundDe(c.round?.displayName);
           const label = `${tt.title}${round ? " · " + round : ""}`;
           liveMatches.push({
             id: "tenm-" + c.id, sport: "tennis", kind: "match", liveOnly: true, tkey: tt.key,
@@ -511,6 +553,8 @@ function readCache() {
       events: events.map((e) => ({
         ...e, start: new Date(e.start), end: new Date(e.end),
         ...(e.games ? { games: e.games.map((g) => ({ ...g, start: new Date(g.start), end: new Date(g.end) })) } : {}),
+        ...(e.draw ? { draw: Object.fromEntries(Object.entries(e.draw).map(([k, list]) =>
+          [k, list.map((m) => ({ ...m, start: new Date(m.start) }))])) } : {}),
       })),
     };
   } catch { return null; }
@@ -790,6 +834,74 @@ export default function App() {
   );
 }
 
+// Turnierbaum: Runden (neueste zuerst), Herren/Damen umschaltbar.
+// Die zwei aktuellsten Runden sind aufgeklappt, ältere per Tipp.
+function TennisDraw({ draw, now }) {
+  const sides = ["Herren", "Damen"].filter((k) => draw[k]?.length);
+  const [side, setSide] = useState(sides[0]);
+  const [openRounds, setOpenRounds] = useState(null);
+  const matches = draw[side] || [];
+  const rounds = [];
+  for (const m of matches) {
+    let r = rounds.find((x) => x.name === m.round);
+    if (!r) rounds.push((r = { name: m.round, id: m.roundId, last: m.start, list: [] }));
+    r.list.push(m);
+    if (m.start > r.last) r.last = m.start;
+  }
+  rounds.sort((a, b) => b.id - a.id || b.last - a.last);
+  rounds.forEach((r) => r.list.sort((a, b) => a.start - b.start));
+  const isOpen = (name, i) => (openRounds ? openRounds.includes(name) : i < 2);
+  const toggle = (name) => setOpenRounds((prev) => {
+    const cur = prev ?? rounds.slice(0, 2).map((r) => r.name);
+    return cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+  });
+
+  return (
+    <div style={S.draw} onClick={(ev) => ev.stopPropagation()}>
+      {sides.length > 1 && (
+        <div style={S.segment}>
+          {sides.map((k) => (
+            <button key={k} onClick={() => { setSide(k); setOpenRounds(null); }} style={S.segBtn(side === k)}>{k}</button>
+          ))}
+        </div>
+      )}
+      {rounds.map((r, i) => (
+        <div key={r.name}>
+          <button onClick={() => toggle(r.name)} style={S.roundHead}>
+            <span>{r.name}</span>
+            <span style={{ color: C.grey, fontWeight: 600 }}>{r.list.length} {isOpen(r.name, i) ? "▴" : "▾"}</span>
+          </button>
+          {isOpen(r.name, i) && r.list.map((m) => {
+            const live = m.state === "in";
+            return (
+              <div key={m.id} style={S.tMatch}>
+                {m.players.map((p, pi) => (
+                  <div key={pi} style={S.tLine}>
+                    <span style={{ ...S.tName, fontWeight: p.winner ? 700 : 500, color: m.state === "post" && !p.winner ? C.grey : C.ink }}>
+                      {p.name}
+                    </span>
+                    <span style={S.tSets}>
+                      {p.sets.map((v, si) => (
+                        <span key={si} style={{ ...S.tSet, fontWeight: p.winner ? 700 : 500,
+                          color: live ? C.liveInk : m.state === "post" && !p.winner ? C.grey : C.ink }}>{v}</span>
+                      ))}
+                    </span>
+                  </div>
+                ))}
+                <div style={S.tMeta}>
+                  {live ? <span style={{ color: C.liveInk, fontWeight: 700 }}>LIVE</span>
+                    : m.state === "post" ? (/ret/i.test(m.detail) ? "Aufgabe" : /w\/?o|walkover/i.test(m.detail) ? "Kampflos" : "Beendet")
+                    : `${m.start.toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "numeric" })} · ${time(m.start)} Uhr`}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function FilterSheet({ sports, selected, onToggle, onReset, onClose }) {
   return (
     <div style={S.sheetBackdrop} onClick={onClose}>
@@ -856,7 +968,8 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
           ? e.games.some((g) => isLive(g, now))
           : multi ? inWindow && liveKeys.has(e.tkey ? "ten:" + e.tkey : e.sport) : inWindow;
         const running = multi && inWindow && !live;
-        const open = isMd && openIds.includes(e.id);
+        const hasDraw = !!e.draw && (e.draw.Herren?.length || e.draw.Damen?.length) > 0;
+        const open = (isMd || hasDraw) && openIds.includes(e.id);
         const pinned = isMd ? e.games.filter((g) => g.pin) : [];
         const shownGames = open ? e.games : pinned;
         return (
@@ -869,8 +982,8 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
                   : { marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.border}` }),
               }}>{dayLabel(d, now)}</div>
             )}
-            <div style={{ ...S.card, ...(live || isMd ? { cursor: "pointer" } : null) }}
-              onClick={isMd ? () => toggleOpen(e.id) : live ? onOpenLive : undefined}>
+            <div style={{ ...S.card, ...(live || isMd || hasDraw ? { cursor: "pointer" } : null) }}
+              onClick={isMd || hasDraw ? () => toggleOpen(e.id) : live ? onOpenLive : undefined}>
               <div style={S.cardTop}>
                 <span style={S.pillWrap}>
                   <span style={{ ...S.pill, background: s.color, color: "#fff" }}>
@@ -926,11 +1039,14 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
                   })}
                 </div>
               )}
+              {hasDraw && open && <TennisDraw draw={e.draw} now={now} />}
               <div style={S.cardFoot}>
                 <span style={S.tv}>
                   {isMd
                     ? (open ? "Spiele ausblenden ▴" : `Alle ${e.games.length} Spiele anzeigen ▾`)
-                    : tvFor(e) ? `TV · ${tvFor(e)}` : ""}
+                    : hasDraw
+                      ? `${tvFor(e) ? `TV · ${tvFor(e)}   ·   ` : ""}${open ? "Turnierbaum ausblenden ▴" : "Turnierbaum ▾"}`
+                      : tvFor(e) ? `TV · ${tvFor(e)}` : ""}
                 </span>
                 <button style={S.calBtn} aria-label="In Kalender eintragen"
                   onClick={(ev) => { ev.stopPropagation(); addToCalendar(e); }}>
@@ -1083,6 +1199,20 @@ const S = {
           fontVariantNumeric: "tabular-nums", color: C.ink, whiteSpace: "nowrap" },
   tv: { fontSize: 11.5, lineHeight: "16px", fontWeight: 700, letterSpacing: "0.02em",
         color: C.ink, opacity: 0.55 },
+  draw: { marginTop: 14, borderTop: `1px solid ${C.border}`, paddingTop: 12, cursor: "default" },
+  segment: { display: "flex", background: C.bg, borderRadius: 999, padding: 3, marginBottom: 6 },
+  segBtn: (on) => ({ flex: 1, border: "none", cursor: "pointer", borderRadius: 999, padding: "7px 0",
+    fontFamily: C.body, fontSize: 12.5, fontWeight: 600, background: on ? C.card : "transparent",
+    color: on ? C.ink : C.grey, boxShadow: on ? "0 1px 2px rgba(22,22,26,.08)" : "none" }),
+  roundHead: { width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+    border: "none", background: "none", cursor: "pointer", padding: "12px 0 6px", fontFamily: C.body,
+    fontSize: 12, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", color: C.ink },
+  tMatch: { padding: "8px 0", borderBottom: `1px solid ${C.border}` },
+  tLine: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "2px 0" },
+  tName: { fontSize: 14, letterSpacing: "-0.01em", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  tSets: { display: "flex", gap: 10, flexShrink: 0 },
+  tSet: { width: 12, textAlign: "center", fontSize: 14, fontVariantNumeric: "tabular-nums" },
+  tMeta: { fontSize: 11, fontWeight: 600, color: C.grey, marginTop: 3 },
   games: { marginTop: 14, borderTop: `1px solid ${C.border}` },
   gamesLabel: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
     color: C.grey, padding: "10px 0 2px" },
