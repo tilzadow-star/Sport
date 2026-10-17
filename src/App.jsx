@@ -40,6 +40,8 @@ async function fx(url) {
   }
 }
 
+const SPORT_ORDER = Object.keys(SPORTS);
+
 // ---- QUELLE 1: Formel 1 (laufendes + nächstes Jahr, damit der Kalender über den Jahreswechsel reicht) ----
 async function getF1() {
   const y = new Date().getFullYear();
@@ -949,7 +951,14 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
       const ongoing = e.start < todayStart;
       return { e, ongoing, d: ongoing ? todayStart : e.start };
     })
-    .sort((a, b) => a.d - b.d || a.e.start - b.e.start);
+    // Innerhalb eines Tages: erst nach Sportart (Reihenfolge wie im Filter), dann nach Uhrzeit
+    .sort((a, b) => {
+      const da = new Date(a.d.getFullYear(), a.d.getMonth(), a.d.getDate());
+      const db = new Date(b.d.getFullYear(), b.d.getMonth(), b.d.getDate());
+      return da - db
+        || SPORT_ORDER.indexOf(a.e.sport) - SPORT_ORDER.indexOf(b.e.sport)
+        || a.e.start - b.e.start;
+    });
   let lastKey = "";
   return (
     <div style={{ paddingTop: 2 }}>
