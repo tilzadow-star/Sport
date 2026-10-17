@@ -668,6 +668,11 @@ export default function App() {
   const base = selected.length ? events.filter((e) => selected.includes(e.sport)) : events;
   const upcoming = base.filter((e) => e.end >= now && e.kind !== "match");
   const order = Object.keys(SPORTS);
+  // Welche Turniere haben gerade echte Live-Spiele? (Tennis pro Turnier, Golf gesamt)
+  const liveKeys = new Set(
+    events.filter((e) => e.kind === "match" && isLive(e, now))
+      .map((e) => (e.sport === "tennis" ? "ten:" + e.tkey : e.sport))
+  );
   const live = base
     .filter((e) => isLive(e, now) && e.kind !== "tournament")
     .sort((a, b) => order.indexOf(a.sport) - order.indexOf(b.sport) || a.start - b.start);
@@ -716,7 +721,7 @@ export default function App() {
           {status === "loading" && <p style={S.note}>Termine werden geladen …</p>}
           {status === "error" && <p style={S.note}>Konnte die Termine nicht laden. Verbindung prüfen und neu laden.</p>}
           {status === "ok" && tab === "termine" && (
-            <Termine events={upcoming} now={now} onOpenLive={() => setTab("live")} />
+            <Termine events={upcoming} now={now} liveKeys={liveKeys} onOpenLive={() => setTab("live")} />
           )}
           {status === "ok" && tab === "live" && (
             <Live events={live} next={upcoming.find((e) => !isLive(e, now))} />
@@ -773,7 +778,7 @@ function FilterSheet({ sports, selected, onToggle, onReset, onClose }) {
   );
 }
 
-function Termine({ events, now, onOpenLive }) {
+function Termine({ events, now, liveKeys, onOpenLive }) {
   if (!events.length) return <p style={S.note}>Keine anstehenden Veranstaltungen.</p>;
   // Laufende mehrtägige Events (Start vor heute) unter "Heute" einsortieren
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -792,7 +797,12 @@ function Termine({ events, now, onOpenLive }) {
         const showDay = key !== lastKey;
         const first = lastKey === "";
         lastKey = key;
-        const live = isLive(e, now);
+        // Mehrtägige Turniere: nur LIVE, wenn gerade wirklich ein Spiel/eine Runde läuft
+        // (Tennis: Live-Match dieses Turniers; Golf: Live-Leaderboard). Sonst neutral "läuft".
+        const multi = e.kind === "tournament" && e.end - e.start > 20 * 3600e3;
+        const inWindow = isLive(e, now);
+        const live = multi ? inWindow && liveKeys.has(e.tkey ? "ten:" + e.tkey : e.sport) : inWindow;
+        const running = multi && inWindow && !live;
         return (
           <div key={e.id}>
             {showDay && (
@@ -818,6 +828,8 @@ function Termine({ events, now, onOpenLive }) {
                       {e.score && <span style={S.time}>{e.score}</span>}
                       <span style={S.livePill}><i style={S.liveDot} />LIVE</span>
                     </>
+                  ) : running ? (
+                    <span style={S.runningPill}>läuft</span>
                   ) : e.score ? (
                     <span style={{ ...S.time, color: C.grey }}>{e.score}</span>
                   ) : e.tbc ? (
@@ -991,6 +1003,9 @@ const S = {
     fontFamily: C.body, fontSize: 11.5, fontWeight: 600, color: C.grey },
   offline: { margin: "0 20px 8px", fontSize: 12, fontWeight: 600, color: C.liveInk,
              background: C.liveTint, borderRadius: 10, padding: "7px 11px" },
+  runningPill: { fontSize: 10.5, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase",
+                 color: C.grey, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 999,
+                 padding: "3px 8px", whiteSpace: "nowrap" },
   tbc: { fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase",
          color: C.grey, border: `1px dashed ${C.border}`, borderRadius: 999, padding: "4px 9px",
          whiteSpace: "nowrap" },
