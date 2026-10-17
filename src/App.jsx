@@ -489,11 +489,9 @@ function readCache() {
   } catch { return null; }
 }
 
-// ---- Kalender-Export ----
-//  Zwei Wege, weil installierte Web-Apps Downloads oft blockieren:
-//   1) Google Kalender: Link öffnet die Google-Kalender-App bzw. -Webseite mit fertigem Termin
-//   2) Kalender-Datei (.ics) über das Teilen-Menü des Handys -> Apple Kalender, Outlook, Samsung …
-//  Mehrtägige Turniere = ganztägig, Einzelevents mit Uhrzeit (+ Erinnerung 30 Min. vorher in der .ics).
+// ---- Kalender-Export (Apple Kalender) ----
+//  Mehrtägige Turniere = ganztägig über den ganzen Zeitraum,
+//  Einzelevents mit Uhrzeit und Erinnerung 30 Minuten vorher.
 const pad2 = (n) => String(n).padStart(2, "0");
 const utcStamp = (d) => `${d.getUTCFullYear()}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}T${pad2(d.getUTCHours())}${pad2(d.getUTCMinutes())}00Z`;
 const ymd = (d) => `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`;
@@ -503,16 +501,6 @@ function calInfo(e) {
   const tv = tvFor(e);
   const details = [SPORTS[e.sport]?.label, e.subtitle, tv && "TV: " + tv].filter(Boolean).join(" · ");
   return { multiDay, dayAfter, details };
-}
-// Tweek übernimmt Termine aus Google Kalender, kann aber keine mehrtägigen Termine.
-// Mehrtägige Turniere landen deshalb als ganztägiger Termin am Starttag, mit Enddatum im Titel.
-function googleCalUrl(e) {
-  const { multiDay, details } = calInfo(e);
-  const startNext = new Date(e.start.getFullYear(), e.start.getMonth(), e.start.getDate() + 1);
-  const dates = multiDay ? `${ymd(e.start)}/${ymd(startNext)}` : `${utcStamp(e.start)}/${utcStamp(e.end)}`;
-  const text = multiDay ? `${e.title} (bis ${shortDate(e.end)})` : e.title;
-  const q = new URLSearchParams({ action: "TEMPLATE", text, dates, details, ctz: "Europe/Berlin" });
-  return "https://calendar.google.com/calendar/render?" + q.toString();
 }
 function buildIcs(e) {
   const { multiDay, dayAfter, details } = calInfo(e);
@@ -532,18 +520,25 @@ function buildIcs(e) {
   ];
   return { ics: lines.join("\r\n"), name: e.title.replace(/[^\wäöüÄÖÜß-]+/g, "_") + ".ics" };
 }
-async function shareIcs(e) {
+function addToCalendar(e) {
   const { ics, name } = buildIcs(e);
-  const file = new File([ics], name, { type: "text/calendar" });
-  // 1. Teilen-Menü (funktioniert auch in der installierten App)
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file], title: e.title }); return; }
-    catch (err) { if (err?.name === "AbortError") return; }
+  // Weg 1 (iPhone, installierte App): der Service Worker liefert die Datei unter einer echten
+  // Adresse aus -> iOS zeigt "Zum Kalender hinzufügen". Inhalt steckt Base64-kodiert im Link.
+  if (navigator.serviceWorker?.controller) {
+    const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(ics)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    window.location.href = `/termin.ics?d=${b64}`;
+    return;
   }
-  // 2. Fallback: Datei herunterladen (Browser/Desktop)
+  // Weg 2: Teilen-Menü bzw. Download (Browser/Vorschau ohne Service Worker)
+  const file = new File([ics], name, { type: "text/calendar" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file], title: e.title }).catch(() => {});
+    return;
+  }
   const url = URL.createObjectURL(file);
   const a = document.createElement("a");
-  a.href = url; a.download = name; a.target = "_blank";
+  a.href = url; a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
@@ -619,7 +614,6 @@ export default function App() {
     try { return JSON.parse(localStorage.getItem("startzeit-filter") || "[]"); } catch { return []; }
   });
   const [filterOpen, setFilterOpen] = useState(false);
-  const [calEvent, setCalEvent] = useState(null); // Termin, für den das Kalender-Fenster offen ist
   useEffect(() => {
     try { localStorage.setItem("startzeit-filter", JSON.stringify(selected)); } catch { /* egal */ }
   }, [selected]);
@@ -740,8 +734,7 @@ export default function App() {
           {status === "loading" && <p style={S.note}>Termine werden geladen …</p>}
           {status === "error" && <p style={S.note}>Konnte die Termine nicht laden. Verbindung prüfen und neu laden.</p>}
           {status === "ok" && tab === "termine" && (
-            <Termine events={upcoming} now={now} liveKeys={liveKeys} onOpenLive={() => setTab("live")}
-              onCalendar={setCalEvent} />
+            <Termine events={upcoming} now={now} liveKeys={liveKeys} onOpenLive={() => setTab("live")} />
           )}
           {status === "ok" && tab === "live" && (
             <Live events={live} next={upcoming.find((e) => !isLive(e, now))} />
@@ -757,35 +750,6 @@ export default function App() {
           <FilterSheet sports={present} selected={selected} onToggle={toggleSport}
             onReset={() => setSelected([])} onClose={() => setFilterOpen(false)} />
         )}
-        {calEvent && <CalendarSheet event={calEvent} onClose={() => setCalEvent(null)} />}
-      </div>
-    </div>
-  );
-}
-
-function CalendarSheet({ event: e, onClose }) {
-  const when = e.start.toDateString() !== e.end.toDateString()
-    ? `${shortDate(e.start)} – ${shortDate(e.end)}`
-    : `${day(e.start)}, ${time(e.start)} Uhr`;
-  return (
-    <div style={S.sheetBackdrop} onClick={onClose}>
-      <div style={S.sheet} onClick={(ev) => ev.stopPropagation()}>
-        <div style={S.sheetGrip} />
-        <div style={{ padding: "4px 4px 14px" }}>
-          <div style={S.sheetTitle}>In Kalender eintragen</div>
-          <div style={{ ...S.cardSub, marginTop: 6 }}>{e.title} · {when}</div>
-        </div>
-        <div style={S.sheetList}>
-          <a href={googleCalUrl(e)} target="_blank" rel="noopener noreferrer" onClick={onClose}
-            style={{ ...S.sheetRow, textDecoration: "none" }}>
-            <span>Tweek</span><span style={S.rowHint}>über Google Kalender</span>
-          </a>
-          <button style={{ ...S.sheetRow, borderBottom: "none" }}
-            onClick={() => { shareIcs(e); onClose(); }}>
-            <span>Andere Kalender-App</span><span style={S.rowHint}>über Teilen</span>
-          </button>
-        </div>
-        <button onClick={onClose} style={{ ...S.sheetDone, background: C.card, color: C.ink }}>Abbrechen</button>
       </div>
     </div>
   );
@@ -827,7 +791,7 @@ function FilterSheet({ sports, selected, onToggle, onReset, onClose }) {
   );
 }
 
-function Termine({ events, now, liveKeys, onOpenLive, onCalendar }) {
+function Termine({ events, now, liveKeys, onOpenLive }) {
   if (!events.length) return <p style={S.note}>Keine anstehenden Veranstaltungen.</p>;
   // Laufende mehrtägige Events (Start vor heute) unter "Heute" einsortieren
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -896,7 +860,7 @@ function Termine({ events, now, liveKeys, onOpenLive, onCalendar }) {
               <div style={S.cardFoot}>
                 <span style={S.tv}>{tvFor(e) ? `TV · ${tvFor(e)}` : ""}</span>
                 <button style={S.calBtn} aria-label="In Kalender eintragen"
-                  onClick={(ev) => { ev.stopPropagation(); onCalendar(e); }}>
+                  onClick={(ev) => { ev.stopPropagation(); addToCalendar(e); }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                     strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <rect x="3" y="5" width="18" height="16" rx="3" /><path d="M3 10h18M8 3v4M16 3v4M12 13v5M9.5 15.5h5" />
@@ -1010,7 +974,6 @@ const S = {
   check: (on, color) => ({ width: 22, height: 22, borderRadius: 7, flexShrink: 0,
     display: "inline-flex", alignItems: "center", justifyContent: "center",
     border: `1.5px solid ${on ? color : C.border}`, background: on ? color : "transparent" }),
-  rowHint: { fontSize: 12, fontWeight: 500, color: C.grey },
   sheetDone: { marginTop: 12, cursor: "pointer", border: "none", borderRadius: 999, padding: "14px 0",
     fontFamily: C.body, fontSize: 14, fontWeight: 600, background: C.ink, color: "#fff" },
   counter: { display: "inline-flex", alignItems: "center", gap: 7, background: C.card,

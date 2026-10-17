@@ -1,7 +1,7 @@
 // Startzeit – Service Worker
 // Speichert die App selbst (HTML, JS, CSS, Icons), damit sie auch ohne Netz startet.
 // Die Sportdaten speichert die App selbst im Browser (localStorage).
-const CACHE = "startzeit-v2";
+const CACHE = "startzeit-v3";
 const CORE = ["/", "/index.html", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -21,6 +21,25 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
+
+  // Kalender-Termin: Die App schickt den Termin im Link mit, hier wird daraus eine echte
+  // .ics-Datei. iOS zeigt dann "Zum Kalender hinzufügen".
+  if (url.origin === self.location.origin && url.pathname === "/termin.ics") {
+    try {
+      const b64 = (url.searchParams.get("d") || "").replace(/-/g, "+").replace(/_/g, "/");
+      const bin = atob(b64 + "===".slice((b64.length + 3) % 4));
+      const ics = new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+      e.respondWith(new Response(ics, {
+        headers: {
+          "Content-Type": "text/calendar; charset=utf-8",
+          "Content-Disposition": 'inline; filename="termin.ics"',
+        },
+      }));
+    } catch {
+      e.respondWith(new Response("Termin konnte nicht erstellt werden.", { status: 400 }));
+    }
+    return;
+  }
 
   // Sport-APIs und andere fremde Adressen: nicht anfassen (immer frisch aus dem Netz)
   if (url.origin !== self.location.origin) return;
