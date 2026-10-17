@@ -712,8 +712,9 @@ export default function App() {
 
   const present = Object.keys(SPORTS).filter((k) => events.some((e) => e.sport === k));
   const base = selected.length ? events.filter((e) => selected.includes(e.sport)) : events;
-  // Termine: keine Einzelspiele (die stecken in der Spieltag-Kachel) – außer Spiele deutscher Teams international
-  const upcoming = base.filter((e) => e.end >= now && (e.kind !== "match" || e.pin));
+  // Termine: keine Einzelspiele – die stecken in der Spieltag-Kachel
+  // (Spiele deutscher Teams international werden dort immer sichtbar hervorgehoben)
+  const upcoming = base.filter((e) => e.end >= now && e.kind !== "match");
   const order = Object.keys(SPORTS);
   // Welche Turniere haben gerade echte Live-Spiele? (Tennis pro Turnier, Golf gesamt)
   const liveKeys = new Set(
@@ -856,6 +857,8 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
           : multi ? inWindow && liveKeys.has(e.tkey ? "ten:" + e.tkey : e.sport) : inWindow;
         const running = multi && inWindow && !live;
         const open = isMd && openIds.includes(e.id);
+        const pinned = isMd ? e.games.filter((g) => g.pin) : [];
+        const shownGames = open ? e.games : pinned;
         return (
           <div key={e.id}>
             {showDay && (
@@ -899,9 +902,10 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
                   ? ` · ${multi ? `${shortDate(e.start)} – ${shortDate(e.end)}` : day(e.start)}`
                   : ongoing && ` · ${tourDay(e.start, now)} · bis ${shortDate(e.end)}`}
               </div>
-              {open && (
+              {isMd && shownGames.length > 0 && (
                 <div style={S.games}>
-                  {e.games.map((g) => {
+                  {!open && <div style={S.gamesLabel}>Deutsche Teams</div>}
+                  {shownGames.map((g) => {
                     const gl = isLive(g, now);
                     return (
                       <div key={g.id} style={S.gameRow}>
@@ -909,7 +913,9 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
                           {g.start.toLocaleDateString("de-DE", { weekday: "short" }).replace(".", "")} {time(g.start)}
                         </span>
                         <span style={S.gameTeams}>
-                          <span style={{ fontWeight: g.pin ? 700 : 600 }}>{g.title}</span>
+                          <span style={{ fontWeight: g.pin ? 700 : 600 }}>
+                            {g.pin && <i style={S.pinDot} />}{g.title}
+                          </span>
                           {tvFor(g) && <span style={S.gameTv}>{tvFor(g)}</span>}
                         </span>
                         <span style={{ ...S.gameScore, color: gl ? C.liveInk : g.finished ? C.ink : C.grey }}>
@@ -922,7 +928,9 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
               )}
               <div style={S.cardFoot}>
                 <span style={S.tv}>
-                  {isMd ? (open ? "Spiele ausblenden ▴" : "Alle Spiele anzeigen ▾") : tvFor(e) ? `TV · ${tvFor(e)}` : ""}
+                  {isMd
+                    ? (open ? "Spiele ausblenden ▴" : `Alle ${e.games.length} Spiele anzeigen ▾`)
+                    : tvFor(e) ? `TV · ${tvFor(e)}` : ""}
                 </span>
                 <button style={S.calBtn} aria-label="In Kalender eintragen"
                   onClick={(ev) => { ev.stopPropagation(); addToCalendar(e); }}>
@@ -1076,6 +1084,10 @@ const S = {
   tv: { fontSize: 11.5, lineHeight: "16px", fontWeight: 700, letterSpacing: "0.02em",
         color: C.ink, opacity: 0.55 },
   games: { marginTop: 14, borderTop: `1px solid ${C.border}` },
+  gamesLabel: { fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+    color: C.grey, padding: "10px 0 2px" },
+  pinDot: { display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#1E9E68",
+    marginRight: 7, verticalAlign: "middle", position: "relative", top: -1 },
   gameRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0",
     borderBottom: `1px solid ${C.border}` },
   gameWhen: { width: 58, flexShrink: 0, fontSize: 11.5, fontWeight: 600, color: C.grey,
