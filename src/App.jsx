@@ -362,6 +362,9 @@ const CURATED = [
   { id: "golf-open", sport: "golf", kind: "tournament", major: true, badgeLabel: "Major",
     title: "The Open Championship", subtitle: "Old Course, St Andrews",
     start: iso("2027-07-15T12:00:00"), end: iso("2027-07-18T22:00:00") },
+  { id: "golf-ryder-27", sport: "golf", kind: "tournament", major: true, badgeLabel: "Ryder Cup",
+    title: "Ryder Cup", subtitle: "Europa vs. USA · Adare Manor, Irland",
+    start: iso("2027-09-17T09:00:00"), end: iso("2027-09-19T20:00:00") },
   // Triathlon – nur Langdistanz (Ironman/Challenge), im Stream/TV übertragen
   { id: "tri-703wm-26", sport: "triathlon", kind: "tournament", major: true, badgeLabel: "WM",
     title: "Ironman 70.3 WM", subtitle: "Langdistanz · Nizza (FR)",
@@ -486,6 +489,47 @@ function readCache() {
   } catch { return null; }
 }
 
+// ---- Kalender-Export (.ics) ----
+//  Mehrtägige Turniere werden als ganztägige Termine eingetragen, Einzelevents mit Uhrzeit
+//  und Erinnerung 30 Minuten vorher.
+function addToCalendar(e) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const utc = (d) => `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}00Z`;
+  const ymd = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+  const esc = (t) => String(t || "").replace(/\\/g, "\\\\").replace(/([,;])/g, "\\$1").replace(/\n/g, "\\n");
+  const multiDay = e.start.toDateString() !== e.end.toDateString() && e.end - e.start > 20 * 3600e3;
+  const dayAfter = new Date(e.end.getFullYear(), e.end.getMonth(), e.end.getDate() + 1);
+  const tv = tvFor(e);
+  const lines = [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Startzeit//DE", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+    "BEGIN:VEVENT",
+    `UID:${e.id}@startzeit`,
+    `DTSTAMP:${utc(new Date())}`,
+    ...(multiDay
+      ? [`DTSTART;VALUE=DATE:${ymd(e.start)}`, `DTEND;VALUE=DATE:${ymd(dayAfter)}`]
+      : [`DTSTART:${utc(e.start)}`, `DTEND:${utc(e.end)}`]),
+    `SUMMARY:${esc(e.title)}`,
+    `DESCRIPTION:${esc([SPORTS[e.sport]?.label, e.subtitle, tv && "TV: " + tv].filter(Boolean).join(" · "))}`,
+    ...(multiDay ? [] : ["BEGIN:VALARM", "ACTION:DISPLAY", `DESCRIPTION:${esc(e.title)}`, "TRIGGER:-PT30M", "END:VALARM"]),
+    "END:VEVENT", "END:VCALENDAR",
+  ];
+  const ics = lines.join("\r\n");
+  const name = e.title.replace(/[^\wäöüÄÖÜß-]+/g, "_") + ".ics";
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  if (isIOS) {
+    // iPhone/iPad: direkt öffnen, iOS bietet dann "Zum Kalender hinzufügen" an
+    window.location.href = "data:text/calendar;charset=utf-8," + encodeURIComponent(ics);
+    return;
+  }
+  // Android/Desktop: Datei herunterladen und mit der Kalender-App öffnen
+  const url = URL.createObjectURL(new Blob([ics], { type: "text/calendar;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 // ---- TV-Sender (Deutschland, Rechtelage Saison 2026/27) ----
 function tvFor(e) {
   if (e.tv) return e.tv;
@@ -552,7 +596,15 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [status, setStatus] = useState("loading");
   const [tab, setTab] = useState("termine");
-  const [selected, setSelected] = useState(null);
+  // Filter: Liste ausgewählter Sportarten (leer = alle). Wird im Browser gemerkt.
+  const [selected, setSelected] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("startzeit-filter") || "[]"); } catch { return []; }
+  });
+  const [filterOpen, setFilterOpen] = useState(false);
+  useEffect(() => {
+    try { localStorage.setItem("startzeit-filter", JSON.stringify(selected)); } catch { /* egal */ }
+  }, [selected]);
+  const toggleSport = (k) => setSelected((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
   const [now, setNow] = useState(new Date());
   const [offlineSince, setOfflineSince] = useState(null); // Zeitpunkt des angezeigten Stands, wenn offline
   const touch = useRef({ x: 0, y: 0 });
@@ -613,7 +665,7 @@ export default function App() {
   }, []);
 
   const present = Object.keys(SPORTS).filter((k) => events.some((e) => e.sport === k));
-  const base = selected ? events.filter((e) => e.sport === selected) : events;
+  const base = selected.length ? events.filter((e) => selected.includes(e.sport)) : events;
   const upcoming = base.filter((e) => e.end >= now && e.kind !== "match");
   const order = Object.keys(SPORTS);
   const live = base
@@ -633,27 +685,30 @@ export default function App() {
       <div style={S.phone}>
         <div style={S.head}>
           <span style={S.brand}>{tab === "termine" ? "Startzeit" : "Live"}</span>
-          {live.length > 0 && (
-            <span style={S.counter}><i style={S.liveDot} />{live.length} live</span>
-          )}
+          <span style={S.headRight}>
+            {live.length > 0 && (
+              <span style={S.counter}><i style={S.liveDot} />{live.length} live</span>
+            )}
+            {status === "ok" && (
+              <button onClick={() => setFilterOpen(true)} style={S.filterBtn(selected.length > 0)}
+                aria-label="Sportarten filtern">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  strokeWidth="2.4" strokeLinecap="round"><path d="M3 6h18M7 12h10M10 18h4" /></svg>
+                Filter{selected.length > 0 && <span style={S.filterCount}>{selected.length}</span>}
+              </button>
+            )}
+          </span>
         </div>
         {offlineSince && (
           <div style={S.offline}>Offline · Stand {day(offlineSince)}, {time(offlineSince)} Uhr</div>
         )}
 
-        {status === "ok" && (
-          <div style={S.chips}>
-            <button onClick={() => setSelected(null)} style={S.chipAll(selected === null)}>Alle</button>
-            {present.map((k) => {
-              const on = selected === k;
-              const dim = selected !== null && selected !== k;
-              return (
-                <button key={k} onClick={() => setSelected((prev) => (prev === k ? null : k))}
-                  style={S.chip(on, dim, SPORTS[k].color)}>
-                  <i style={{ ...S.chipDot, background: SPORTS[k].color }} />{SPORTS[k].label}
-                </button>
-              );
-            })}
+        {status === "ok" && selected.length > 0 && (
+          <div style={S.activeRow}>
+            <span style={S.activeText}>
+              {selected.map((k) => SPORTS[k]?.label).filter(Boolean).join(", ")}
+            </span>
+            <button onClick={() => setSelected([])} style={S.resetBtn}>Alle zeigen</button>
           </div>
         )}
 
@@ -672,6 +727,47 @@ export default function App() {
           <button onClick={() => setTab("termine")} style={S.tab(tab === "termine")}>Termine</button>
           <button onClick={() => setTab("live")} style={S.tab(tab === "live")}>Live</button>
         </nav>
+
+        {filterOpen && (
+          <FilterSheet sports={present} selected={selected} onToggle={toggleSport}
+            onReset={() => setSelected([])} onClose={() => setFilterOpen(false)} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FilterSheet({ sports, selected, onToggle, onReset, onClose }) {
+  return (
+    <div style={S.sheetBackdrop} onClick={onClose}>
+      <div style={S.sheet} onClick={(e) => e.stopPropagation()}>
+        <div style={S.sheetGrip} />
+        <div style={S.sheetHead}>
+          <span style={S.sheetTitle}>Sportarten</span>
+          <button onClick={onReset} style={S.resetBtn}>Alle zeigen</button>
+        </div>
+        <div style={S.sheetList}>
+          {sports.map((k) => {
+            const on = selected.includes(k);
+            return (
+              <button key={k} onClick={() => onToggle(k)} style={S.sheetRow}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
+                  <i style={{ ...S.chipDot, width: 10, height: 10, background: SPORTS[k].color }} />
+                  {SPORTS[k].label}
+                </span>
+                <span style={S.check(on, SPORTS[k].color)}>
+                  {on && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff"
+                      strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 7" /></svg>
+                  )}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <button onClick={onClose} style={S.sheetDone}>
+          {selected.length ? `${selected.length} ausgewählt · Fertig` : "Fertig"}
+        </button>
       </div>
     </div>
   );
@@ -736,7 +832,17 @@ function Termine({ events, now, onOpenLive }) {
                 {e.subtitle}
                 {ongoing && ` · ${tourDay(e.start, now)} · bis ${shortDate(e.end)}`}
               </div>
-              {tvFor(e) && <div style={S.tv}>TV · {tvFor(e)}</div>}
+              <div style={S.cardFoot}>
+                <span style={S.tv}>{tvFor(e) ? `TV · ${tvFor(e)}` : ""}</span>
+                <button style={S.calBtn} aria-label="In Kalender eintragen"
+                  onClick={(ev) => { ev.stopPropagation(); addToCalendar(e); }}>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="5" width="18" height="16" rx="3" /><path d="M3 10h18M8 3v4M16 3v4M12 13v5M9.5 15.5h5" />
+                  </svg>
+                  Kalender
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -796,7 +902,7 @@ function Live({ events, next }) {
 //  STYLES  –  Design 4a "Kachel"
 // ============================================================
 const FONT = `@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');`;
-const KEYS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}`;
+const KEYS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}@keyframes fadein{from{opacity:0}to{opacity:1}}@keyframes slideup{from{transform:translateY(100%)}to{transform:translateY(0)}}`;
 const GLOBAL = `*{box-sizing:border-box}html,body,#root{margin:0;padding:0;min-height:100%;background:#F4F4F1;text-align:left;}`;
 
 const C = {
@@ -815,6 +921,36 @@ const S = {
   head: { display: "flex", alignItems: "center", justifyContent: "space-between",
           padding: "calc(20px + env(safe-area-inset-top)) 20px 12px" },
   brand: { fontSize: 27, lineHeight: "27px", fontWeight: 700, letterSpacing: "-0.035em" },
+  headRight: { display: "inline-flex", alignItems: "center", gap: 8 },
+  filterBtn: (on) => ({ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer",
+    borderRadius: 999, padding: "6px 12px", fontFamily: C.body, fontSize: 12, fontWeight: 600,
+    border: `1px solid ${on ? C.ink : C.border}`, background: on ? C.ink : C.card, color: on ? "#fff" : C.ink }),
+  filterCount: { background: "#fff", color: C.ink, borderRadius: 999, minWidth: 17, height: 17,
+    display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10.5, fontWeight: 700 },
+  activeRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
+    padding: "0 20px 12px", flexShrink: 0 },
+  activeText: { fontSize: 12.5, fontWeight: 600, color: C.grey, overflow: "hidden",
+    textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  resetBtn: { flexShrink: 0, cursor: "pointer", border: "none", background: "none", padding: 0,
+    fontFamily: C.body, fontSize: 12.5, fontWeight: 700, color: C.ink, textDecoration: "underline",
+    textUnderlineOffset: 3 },
+  sheetBackdrop: { position: "absolute", inset: 0, background: "rgba(22,22,26,.35)", zIndex: 20,
+    display: "flex", alignItems: "flex-end", animation: "fadein .15s ease-out" },
+  sheet: { width: "100%", maxHeight: "80%", background: C.bg, borderRadius: "24px 24px 0 0",
+    padding: "8px 16px calc(16px + env(safe-area-inset-bottom))", display: "flex", flexDirection: "column",
+    animation: "slideup .2s ease-out" },
+  sheetGrip: { width: 36, height: 4, borderRadius: 2, background: C.border, margin: "4px auto 10px" },
+  sheetHead: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 4px 12px" },
+  sheetTitle: { fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em" },
+  sheetList: { overflowY: "auto", background: C.card, borderRadius: 18 },
+  sheetRow: { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+    cursor: "pointer", border: "none", borderBottom: `1px solid ${C.border}`, background: "none",
+    padding: "14px 16px", fontFamily: C.body, fontSize: 15, fontWeight: 600, color: C.ink, textAlign: "left" },
+  check: (on, color) => ({ width: 22, height: 22, borderRadius: 7, flexShrink: 0,
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    border: `1.5px solid ${on ? color : C.border}`, background: on ? color : "transparent" }),
+  sheetDone: { marginTop: 12, cursor: "pointer", border: "none", borderRadius: 999, padding: "14px 0",
+    fontFamily: C.body, fontSize: 14, fontWeight: 600, background: C.ink, color: "#fff" },
   counter: { display: "inline-flex", alignItems: "center", gap: 7, background: C.card,
              border: `1px solid ${C.border}`, borderRadius: 999, padding: "6px 12px",
              fontSize: 12, fontWeight: 600, letterSpacing: "-0.005em" },
@@ -848,7 +984,11 @@ const S = {
   time: { fontSize: 22, lineHeight: "24px", fontWeight: 700, letterSpacing: "-0.035em",
           fontVariantNumeric: "tabular-nums", color: C.ink, whiteSpace: "nowrap" },
   tv: { fontSize: 11.5, lineHeight: "16px", fontWeight: 700, letterSpacing: "0.02em",
-        color: C.ink, opacity: 0.55, marginTop: 8 },
+        color: C.ink, opacity: 0.55 },
+  cardFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 10 },
+  calBtn: { display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0, cursor: "pointer",
+    border: `1px solid ${C.border}`, background: C.card, borderRadius: 999, padding: "5px 10px",
+    fontFamily: C.body, fontSize: 11.5, fontWeight: 600, color: C.grey },
   offline: { margin: "0 20px 8px", fontSize: 12, fontWeight: 600, color: C.liveInk,
              background: C.liveTint, borderRadius: 10, padding: "7px 11px" },
   tbc: { fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase",
