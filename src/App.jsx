@@ -15,19 +15,41 @@ const SPORTS = {
   fussball:  { label: "Fußball",   color: "#1E9E68" },
   tennis:    { label: "Tennis",    color: "#7AA92E" },
   golf:      { label: "Golf",      color: "#159A93" },
+  handball:  { label: "Handball",  color: "#5C6BC0" },
+  nfl:       { label: "Football",  color: "#7A5230" },
+  radsport:  { label: "Radsport",  color: "#D4458A" },
+  leichtathletik: { label: "Leichtathletik", color: "#8A5CC7" },
   darts:     { label: "Darts",     color: "#DC4A38" },
   biathlon:  { label: "Biathlon",  color: "#3B78D6" },
   triathlon: { label: "Triathlon", color: "#1FA3B8" },
+  finals:    { label: "Die Finals", color: "#3E5C76" },
+  olympia:   { label: "Olympia",   color: "#1F3A5F" },
 };
 
-// ---- QUELLE 1: Formel 1 ----
+// ---- Netzwerk: zählt Anfragen/Fehler, damit die App "offline" erkennt ----
+const net = { calls: 0, errors: 0 };
+async function fx(url) {
+  net.calls++;
+  try {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r;
+  } catch (err) {
+    net.errors++;
+    throw err;
+  }
+}
+
+// ---- QUELLE 1: Formel 1 (laufendes + nächstes Jahr, damit der Kalender über den Jahreswechsel reicht) ----
 async function getF1() {
-  const res = await fetch("https://api.jolpi.ca/ergast/f1/2026/races/?format=json");
-  const data = await res.json();
-  return (data?.MRData?.RaceTable?.Races ?? []).map((r) => {
+  const y = new Date().getFullYear();
+  const res = await Promise.allSettled([y, y + 1].map((yr) =>
+    fx(`https://api.jolpi.ca/ergast/f1/${yr}/races/?format=json`).then((r) => r.json())));
+  const races = res.flatMap((r) => (r.status === "fulfilled" ? r.value?.MRData?.RaceTable?.Races ?? [] : []));
+  return races.map((r) => {
     const start = new Date(`${r.date}T${r.time || "13:00:00Z"}`);
     return {
-      id: "f1-" + r.round, sport: "f1",
+      id: `f1-${r.season}-${r.round}`, sport: "f1",
       title: r.raceName.replace(" Grand Prix", " GP"),
       subtitle: r.Circuit.Location.locality,
       start, end: new Date(start.getTime() + 3 * 3600e3),
@@ -51,18 +73,24 @@ function scoreOf(m) {
 }
 async function getFootball() {
   const now = new Date();
-  const leaguesRes = await fetch("https://api.openligadb.de/getavailableleagues");
-  const leagues = await leaguesRes.json();
+  let leagues = [];
+  try {
+    const leaguesRes = await fx("https://api.openligadb.de/getavailableleagues");
+    leagues = await leaguesRes.json();
+  } catch { /* Bundesliga funktioniert auch ohne Ligaliste */ }
+  // Bundesliga-Saison beginnt im Juli/August -> Saisonjahr = Startjahr
+  const blSeason = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
   const targets = [
+    { fixed: { leagueShortcut: "bl1", leagueSeason: blSeason }, label: "Bundesliga" },
     { rx: /champions.?league/i, label: "Champions League" },
     { rx: /dfb.?pokal/i,        label: "DFB-Pokal" },
   ];
   const out = [];
   for (const t of targets) {
-    const lg = pickLeague(leagues, t.rx);
+    const lg = t.fixed || pickLeague(leagues, t.rx);
     if (!lg) continue;
     try {
-      const r = await fetch(`https://api.openligadb.de/getmatchdata/${lg.leagueShortcut}/${lg.leagueSeason}`);
+      const r = await fx(`https://api.openligadb.de/getmatchdata/${lg.leagueShortcut}/${lg.leagueSeason}`);
       const matches = await r.json();
       const events = matches.map((m) => {
         const start = new Date(m.matchDateTimeUTC || m.matchDateTime);
@@ -119,7 +147,7 @@ async function getTennis() {
   for (const tour of tours) {
     let data;
     try {
-      const r = await fetch(`https://site.api.espn.com/apis/site/v2/sports/tennis/${tour}/scoreboard`);
+      const r = await fx(`https://site.api.espn.com/apis/site/v2/sports/tennis/${tour}/scoreboard`);
       data = await r.json();
     } catch { continue; }
     for (const ev of data?.events ?? []) {
@@ -153,7 +181,7 @@ async function getTennis() {
           const round = c.round?.displayName;
           const label = `${tt.title}${round ? " · " + round : ""}`;
           liveMatches.push({
-            id: "tenm-" + c.id, sport: "tennis", kind: "match", liveOnly: true,
+            id: "tenm-" + c.id, sport: "tennis", kind: "match", liveOnly: true, tkey: tt.key,
             title: `${n1} – ${n2}`, comp: label, subtitle: label,
             rows: [{ name: n1, score: setStr(cs[0]) }, { name: n2, score: setStr(cs[1]) }],
             note: round || tt.title,
@@ -178,7 +206,7 @@ const GOLF_MAJOR_RX = /masters|pga championship|u\.?s\.? open|open championship|
 async function getGolf() {
   let data;
   try {
-    const r = await fetch("https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard");
+    const r = await fx("https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard");
     data = await r.json();
   } catch { return []; }
   const out = [];
@@ -230,8 +258,98 @@ const TENNIS_CURATED = TENNIS_DATES.map(([key, s, e]) => {
   };
 });
 
+// Vorläufige Termine markieren (Datum geschätzt, noch nicht offiziell)
+const tbc = (e) => ({ ...e, tbc: true });
+
+// Kurzform für gepflegte Termine: [id, sport, titel, untertitel, start, ende, badge?]
+const ev = (id, sport, title, subtitle, start, end, badge) => ({
+  id, sport, kind: "tournament", title, subtitle,
+  start: iso(start), end: iso(end),
+  ...(badge ? { major: true, badgeLabel: badge } : {}),
+});
+
+const MORE = [
+  // ---- Fußball: DFB-Team + Turniere ----
+  { ...ev("dfb-srb-26", "fussball", "Serbien – Deutschland", "Nations League · Belgrad", "2026-11-13T20:45:00", "2026-11-13T22:45:00", "DFB"), tv: "RTL" },
+  { ...ev("dfb-ned-26", "fussball", "Deutschland – Niederlande", "Nations League · Berlin", "2026-11-16T20:45:00", "2026-11-16T22:45:00", "DFB"), tv: "ARD" },
+  ev("unl-finals-27", "fussball", "Nations League Finals", "UEFA · Final Four", "2027-06-09T20:45:00", "2027-06-13T23:00:00"),
+  ev("wwc-27", "fussball", "Frauen-WM 2027", "FIFA · Brasilien", "2027-06-24T22:00:00", "2027-07-25T23:59:00", "WM"),
+  ev("euro-28", "fussball", "EM 2028", "UEFA · England, Schottland, Wales, Irland", "2028-06-09T21:00:00", "2028-07-09T23:59:00", "EM"),
+  // EM-Qualifikation 2027: Auslosung am 06.12.2026 – Länderspielfenster vorläufig, Gegner offen
+  tbc(ev("dfb-q-27-03", "fussball", "DFB · EM-Qualifikation", "Länderspielfenster März · Gegner nach Auslosung", "2027-03-25T20:45:00", "2027-03-30T22:45:00", "DFB")),
+  tbc(ev("dfb-q-27-06", "fussball", "DFB · Länderspiele", "Länderspielfenster Juni", "2027-06-04T20:45:00", "2027-06-08T22:45:00", "DFB")),
+  tbc(ev("dfb-q-27-09", "fussball", "DFB · EM-Qualifikation", "Länderspielfenster September", "2027-09-02T20:45:00", "2027-09-07T22:45:00", "DFB")),
+  tbc(ev("dfb-q-27-10", "fussball", "DFB · EM-Qualifikation", "Länderspielfenster Oktober", "2027-10-07T20:45:00", "2027-10-12T22:45:00", "DFB")),
+  tbc(ev("dfb-q-27-11", "fussball", "DFB · EM-Qualifikation", "Länderspielfenster November", "2027-11-11T20:45:00", "2027-11-16T22:45:00", "DFB")),
+  tbc(ev("wc-30", "fussball", "WM 2030", "FIFA · Spanien, Portugal, Marokko", "2030-06-08T21:00:00", "2030-07-21T23:59:00", "WM")),
+
+  // ---- Handball ----
+  ev("hb-wm-27", "handball", "Männer-WM", "IHF · Deutschland", "2027-01-13T18:00:00", "2027-01-31T20:00:00", "WM"),
+  ev("hb-wm-27-tun", "handball", "Deutschland – Tunesien", "WM · Vorrunde · SAP Garden München", "2027-01-13T20:30:00", "2027-01-13T22:15:00", "DHB"),
+  ev("hb-wm-27-uru", "handball", "Deutschland – Uruguay", "WM · Vorrunde · SAP Garden München", "2027-01-15T20:30:00", "2027-01-15T22:15:00", "DHB"),
+  ev("hb-wm-27-srb", "handball", "Deutschland – Serbien", "WM · Vorrunde · SAP Garden München", "2027-01-17T20:30:00", "2027-01-17T22:15:00", "DHB"),
+  ev("hb-wm-27-final", "handball", "WM-Finale", "LANXESS arena, Köln", "2027-01-31T18:00:00", "2027-01-31T20:00:00", "Finale"),
+  ev("hb-em-28", "handball", "Männer-EM", "EHF · Spanien, Portugal, Schweiz", "2028-01-13T18:00:00", "2028-01-30T20:00:00", "EM"),
+
+  // ---- Triathlon Deutschland 2027: Lang- und Mitteldistanz ----
+  ev("tri-kraichgau-27", "triathlon", "Ironman 70.3 Kraichgau", "Mitteldistanz · Kraichgau (GER)", "2027-05-23T08:00:00", "2027-05-23T16:00:00"),
+  ev("tri-neuseenman-27", "triathlon", "NeuseenMan", "Mitteldistanz · Leipziger Neuseenland (GER)", "2027-05-30T08:00:00", "2027-05-30T16:00:00"),
+  ev("tri-hamburg-27", "triathlon", "Ironman Hamburg", "Langdistanz · Hamburg (GER)", "2027-06-06T06:30:00", "2027-06-06T22:00:00"),
+  ev("tri-ostseeman-27", "triathlon", "OstseeMan", "Lang- & Mitteldistanz · Glücksburg (GER)", "2027-08-01T07:00:00", "2027-08-01T22:00:00"),
+  ev("tri-fcity-27", "triathlon", "Frankfurt City Triathlon", "Mitteldistanz · Frankfurt (GER)", "2027-08-01T08:00:00", "2027-08-01T16:00:00"),
+  ev("tri-leipzig-27", "triathlon", "Ironman 70.3 Leipzig", "Mitteldistanz · Leipzig (GER)", "2027-08-08T08:00:00", "2027-08-08T16:00:00", "Pro Series"),
+  ev("tri-allgaeu-27", "triathlon", "Allgäu Triathlon", "Mitteldistanz · Immenstadt (GER)", "2027-08-22T08:00:00", "2027-08-22T16:00:00"),
+  ev("tri-duisburg-27", "triathlon", "Ironman 70.3 Duisburg", "Mitteldistanz · Duisburg (GER)", "2027-08-29T08:00:00", "2027-08-29T16:00:00"),
+  ev("tri-erkner-27", "triathlon", "Ironman 70.3 Erkner", "Mitteldistanz · Erkner bei Berlin (GER)", "2027-09-12T08:00:00", "2027-09-12T16:00:00"),
+
+  // ---- American Football ----
+  ev("nfl-sb-61", "nfl", "Super Bowl LXI", "NFL · SoFi Stadium, Los Angeles", "2027-02-15T00:30:00", "2027-02-15T04:30:00", "Finale"),
+
+  // ---- Radsport: Monumente + Tour de France 2027 ----
+  ev("rad-msr-27", "radsport", "Mailand–Sanremo", "Monument · Italien", "2027-03-20T10:00:00", "2027-03-20T17:30:00", "Monument"),
+  ev("rad-rvv-27", "radsport", "Flandern-Rundfahrt", "Monument · Belgien", "2027-04-04T10:00:00", "2027-04-04T17:30:00", "Monument"),
+  ev("rad-pr-27", "radsport", "Paris–Roubaix", "Monument · Frankreich", "2027-04-11T11:00:00", "2027-04-11T17:30:00", "Monument"),
+  ev("rad-lbl-27", "radsport", "Lüttich–Bastogne–Lüttich", "Monument · Belgien", "2027-04-25T10:00:00", "2027-04-25T17:00:00", "Monument"),
+  ev("rad-tdf-27", "radsport", "Tour de France", "Grand Départ Edinburgh · Ziel Paris", "2027-07-02T13:00:00", "2027-07-25T21:00:00", "Grand Tour"),
+  ev("rad-lom-27", "radsport", "Il Lombardia", "Monument · Italien", "2027-10-09T10:00:00", "2027-10-09T17:00:00", "Monument"),
+
+  // ---- Leichtathletik: Marathon-Majors, Diamond League, WM ----
+  ev("la-nyc-26", "leichtathletik", "New York City Marathon", "Marathon Major", "2026-11-01T14:40:00", "2026-11-01T19:00:00", "Major"),
+  ev("la-tokyo-27", "leichtathletik", "Tokyo Marathon", "Marathon Major", "2027-03-07T01:10:00", "2027-03-07T05:00:00", "Major"),
+  ev("la-boston-27", "leichtathletik", "Boston Marathon", "Marathon Major", "2027-04-19T15:30:00", "2027-04-19T19:00:00", "Major"),
+  ev("la-london-27", "leichtathletik", "London Marathon", "Marathon Major", "2027-04-25T10:00:00", "2027-04-25T13:00:00", "Major"),
+  ev("la-dl-doha-27", "leichtathletik", "Diamond League Doha", "Diamond League", "2027-05-07T18:00:00", "2027-05-07T21:00:00"),
+  ev("la-dl-shanghai-27", "leichtathletik", "Diamond League Shanghai", "Diamond League · Keqiao", "2027-05-15T13:00:00", "2027-05-15T16:00:00"),
+  ev("la-dl-xiamen-27", "leichtathletik", "Diamond League Xiamen", "Diamond League", "2027-05-22T13:00:00", "2027-05-22T16:00:00"),
+  ev("la-dl-rome-27", "leichtathletik", "Diamond League Rom", "Diamond League · Golden Gala", "2027-05-27T20:00:00", "2027-05-27T22:15:00"),
+  ev("la-dl-rabat-27", "leichtathletik", "Diamond League Rabat", "Diamond League", "2027-05-30T20:00:00", "2027-05-30T22:15:00"),
+  ev("la-dl-oslo-27", "leichtathletik", "Diamond League Oslo", "Diamond League · Bislett Games", "2027-06-03T20:00:00", "2027-06-03T22:15:00"),
+  ev("la-dl-stockholm-27", "leichtathletik", "Diamond League Stockholm", "Diamond League · Bauhaus-Galan", "2027-06-06T19:00:00", "2027-06-06T21:15:00"),
+  ev("la-dl-paris-27", "leichtathletik", "Diamond League Paris", "Diamond League", "2027-06-25T20:00:00", "2027-06-25T22:15:00"),
+  ev("la-dl-eugene-27", "leichtathletik", "Diamond League Eugene", "Diamond League · Prefontaine Classic", "2027-07-03T22:00:00", "2027-07-04T00:30:00"),
+  ev("la-dl-monaco-27", "leichtathletik", "Diamond League Monaco", "Diamond League · Herculis", "2027-07-09T20:00:00", "2027-07-09T22:15:00"),
+  ev("la-dl-lausanne-27", "leichtathletik", "Diamond League Lausanne", "Diamond League · Athletissima", "2027-07-13T20:00:00", "2027-07-13T22:15:00"),
+  ev("la-dl-london-27", "leichtathletik", "Diamond League London", "Diamond League", "2027-07-17T16:00:00", "2027-07-17T18:15:00"),
+  ev("la-dl-silesia-27", "leichtathletik", "Diamond League Schlesien", "Diamond League · Chorzów", "2027-08-15T18:00:00", "2027-08-15T20:15:00"),
+  ev("la-dl-brussels-27", "leichtathletik", "Diamond League Brüssel", "Diamond League · Memorial Van Damme", "2027-08-20T20:00:00", "2027-08-20T22:15:00"),
+  ev("la-dl-final-27", "leichtathletik", "Diamond League Finale", "Diamond League · Zürich", "2027-08-25T20:00:00", "2027-08-26T22:15:00", "Finale"),
+  ev("la-sydney-27", "leichtathletik", "Sydney Marathon", "Marathon Major", "2027-08-28T22:15:00", "2027-08-29T02:00:00", "Major"),
+  ev("la-wm-27", "leichtathletik", "Leichtathletik-WM", "World Athletics · Peking", "2027-09-11T03:00:00", "2027-09-19T16:00:00", "WM"),
+  ev("la-berlin-27", "leichtathletik", "Berlin-Marathon", "Marathon Major", "2027-09-26T09:15:00", "2027-09-26T12:30:00", "Major"),
+  ev("la-chicago-27", "leichtathletik", "Chicago Marathon", "Marathon Major", "2027-10-10T14:30:00", "2027-10-10T17:30:00", "Major"),
+  ev("la-nyc-27", "leichtathletik", "New York City Marathon", "Marathon Major", "2027-11-07T14:40:00", "2027-11-07T19:00:00", "Major"),
+
+  // ---- Die Finals (ARD/ZDF) ----
+  ev("finals-27", "finals", "Die Finals 2027", "Deutsche Meisterschaften · Stuttgart · ARD/ZDF", "2027-07-29T10:00:00", "2027-08-01T22:00:00"),
+
+  // ---- Olympia ----
+  ev("oly-la-28", "olympia", "Olympische Spiele", "Los Angeles 2028", "2028-07-14T03:00:00", "2028-07-30T23:59:00", "Sommer"),
+  ev("oly-alps-30", "olympia", "Olympische Winterspiele", "Französische Alpen 2030", "2030-02-01T20:00:00", "2030-02-17T22:00:00", "Winter"),
+];
+
 const CURATED = [
   ...TENNIS_CURATED,
+  ...MORE,
   { id: "golf-masters", sport: "golf", kind: "tournament", major: true, badgeLabel: "Major",
     title: "The Masters", subtitle: "Augusta National, Georgia",
     start: iso("2027-04-08T15:00:00"), end: iso("2027-04-11T23:00:00") },
@@ -254,10 +372,10 @@ const CURATED = [
   { id: "tri-roth-27", sport: "triathlon", kind: "tournament",
     title: "Challenge Roth", subtitle: "Langdistanz · Roth (GER)",
     start: iso("2027-07-04T06:30:00"), end: iso("2027-07-04T22:00:00") },
-  { id: "tri-703wm-27", sport: "triathlon", kind: "tournament", major: true, badgeLabel: "WM",
+  { id: "tri-703wm-27", sport: "triathlon", kind: "tournament", tbc: true, major: true, badgeLabel: "WM",
     title: "Ironman 70.3 WM", subtitle: "Langdistanz · Chattanooga (USA)",
     start: iso("2027-08-28T08:00:00"), end: iso("2027-08-29T18:00:00") },
-  { id: "tri-kona-27", sport: "triathlon", kind: "tournament", major: true, badgeLabel: "WM",
+  { id: "tri-kona-27", sport: "triathlon", kind: "tournament", tbc: true, major: true, badgeLabel: "WM",
     title: "Ironman WM Kona", subtitle: "Langdistanz · Hawaii",
     start: iso("2027-10-09T18:00:00"), end: iso("2027-10-10T06:00:00") },
   { id: "tri-frankfurt-27", sport: "triathlon", kind: "tournament", major: true, badgeLabel: "EM",
@@ -290,11 +408,11 @@ const CURATED = [
   { id: "bia-oslo", sport: "biathlon", kind: "tournament", title: "Oslo Holmenkollen", subtitle: "Biathlon Weltcup · Finale",
     start: iso("2027-03-18T10:00:00"), end: iso("2027-03-21T16:00:00") },
   // Biathlon Weltcup 2027/28 (IBU-Kalender bis 2030; Wettkampftage innerhalb der IBU-Wochen)
-  { id: "bia-oestersund-27", sport: "biathlon", kind: "tournament", title: "Östersund", subtitle: "Biathlon Weltcup · Auftakt 2027/28",
+  { id: "bia-oestersund-27", sport: "biathlon", kind: "tournament", tbc: true, title: "Östersund", subtitle: "Biathlon Weltcup · Auftakt 2027/28",
     start: iso("2027-11-28T10:00:00"), end: iso("2027-12-05T16:00:00") },
-  { id: "bia-kontiolahti-27", sport: "biathlon", kind: "tournament", title: "Kontiolahti", subtitle: "Biathlon Weltcup",
+  { id: "bia-kontiolahti-27", sport: "biathlon", kind: "tournament", tbc: true, title: "Kontiolahti", subtitle: "Biathlon Weltcup",
     start: iso("2027-12-09T10:00:00"), end: iso("2027-12-12T16:00:00") },
-  { id: "bia-otepaa-27", sport: "biathlon", kind: "tournament", title: "Otepää", subtitle: "Biathlon Weltcup",
+  { id: "bia-otepaa-27", sport: "biathlon", kind: "tournament", tbc: true, title: "Otepää", subtitle: "Biathlon Weltcup",
     start: iso("2027-12-16T10:00:00"), end: iso("2027-12-19T16:00:00") },
   // Darts – PDC-Kalender 2027
   { id: "dar-masters-27", sport: "darts", kind: "tournament", title: "World Masters", subtitle: "PDC · Milton Keynes",
@@ -330,10 +448,15 @@ const CURATED = [
   { id: "dar-wm", sport: "darts", kind: "tournament", major: true, badgeLabel: "WM",
     title: "Darts-WM", subtitle: "PDC · Alexandra Palace, London",
     start: iso("2026-12-11T19:00:00"), end: iso("2027-01-03T23:59:00") },
+  tbc({ id: "dar-wm-28", sport: "darts", kind: "tournament", major: true, badgeLabel: "WM",
+    title: "Darts-WM 2028", subtitle: "PDC · Alexandra Palace, London",
+    start: iso("2027-12-10T19:00:00"), end: iso("2028-01-03T23:59:00") }),
 ];
 
 async function loadAll() {
+  net.calls = 0; net.errors = 0;
   const results = await Promise.allSettled([getF1(), getFootball(), getTennis(), getGolf()]);
+  const offline = net.calls > 0 && net.errors === net.calls;
   const live = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   // Läuft ein Turnier bereits live (ESPN), den festen Eintrag desselben Turniers/Jahres weglassen
   const liveTennis = new Set(
@@ -343,7 +466,65 @@ async function loadAll() {
   const curated = CURATED.filter(
     (e) => !(e.sport === "tennis" && liveTennis.has(e.tkey + "|" + e.start.getFullYear()))
   );
-  return [...live, ...curated].sort((a, b) => a.start - b.start);
+  return { events: [...live, ...curated].sort((a, b) => a.start - b.start), offline };
+}
+
+// ---- Offline-Speicher: letzter erfolgreicher Stand im Browser ----
+const CACHE_KEY = "startzeit-cache-v1";
+function saveCache(events) {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), events })); } catch { /* voll/gesperrt */ }
+}
+function readCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const { ts, events } = JSON.parse(raw);
+    return {
+      ts: new Date(ts),
+      events: events.map((e) => ({ ...e, start: new Date(e.start), end: new Date(e.end) })),
+    };
+  } catch { return null; }
+}
+
+// ---- TV-Sender (Deutschland, Rechtelage Saison 2026/27) ----
+function tvFor(e) {
+  if (e.tv) return e.tv;
+  const wd = e.start.getDay(), h = e.start.getHours();
+  switch (e.sport) {
+    case "f1": return "Sky";
+    case "golf": return "Sky";
+    case "darts": return "Sport1 / DAZN";
+    case "biathlon": return "ARD/ZDF";
+    case "nfl": return "RTL";
+    case "finals": return "ARD/ZDF";
+    case "olympia": return "ARD/ZDF";
+    case "tennis":
+      if (e.tkey === "ao" || e.tkey === "rg") return "Eurosport";
+      if (e.tkey === "wim") return "Prime Video";
+      return "Sky"; // US Open + Masters 1000
+    case "handball":
+      return e.id.startsWith("hb-em") ? "ARD/ZDF" : "ProSieben / Joyn";
+    case "radsport":
+      return e.id.startsWith("rad-tdf") ? "ARD / Eurosport" : "Eurosport";
+    case "leichtathletik":
+      if (e.id.startsWith("la-wm")) return "ARD/ZDF";
+      if (e.id.startsWith("la-berlin")) return "ARD";
+      return null;
+    case "triathlon":
+      if (e.id.startsWith("tri-frankfurt")) return "hr-fernsehen";
+      if (e.id.startsWith("tri-roth")) return "BR";
+      return null;
+    case "fussball":
+      if (e.comp === "Bundesliga") {
+        if (wd === 0) return "DAZN";                       // Sonntag
+        if (wd === 6 && h < 17) return "Sky · Konferenz DAZN"; // Samstag 15:30
+        return "Sky";                                       // Freitag, Samstag 18:30
+      }
+      if (e.comp === "Champions League") return wd === 2 ? "DAZN / Prime Video" : "DAZN";
+      if (e.comp === "DFB-Pokal") return "Sky";
+      return null;
+    default: return null;
+  }
 }
 // ---- Helfer ----
 const day = (d) => d.toLocaleDateString("de-DE", { weekday: "long", day: "2-digit", month: "long" });
@@ -373,10 +554,58 @@ export default function App() {
   const [tab, setTab] = useState("termine");
   const [selected, setSelected] = useState(null);
   const [now, setNow] = useState(new Date());
+  const [offlineSince, setOfflineSince] = useState(null); // Zeitpunkt des angezeigten Stands, wenn offline
   const touch = useRef({ x: 0, y: 0 });
+  const eventsRef = useRef([]);
 
+  // Laden + automatisch aktualisieren: jede Minute, wenn etwas live läuft, sonst alle 15 Minuten.
+  // Beim Zurückkehren in die App oder wenn das Netz wieder da ist, sofort neu laden.
   useEffect(() => {
-    loadAll().then((ev) => { setEvents(ev); setStatus("ok"); }).catch(() => setStatus("error"));
+    let timer, cancelled = false, running = false;
+    const cached = readCache();
+    if (cached) { eventsRef.current = cached.events; setEvents(cached.events); setStatus("ok"); }
+
+    const schedule = () => {
+      clearTimeout(timer);
+      const t = new Date();
+      const anyLive = eventsRef.current.some((e) => isLive(e, t) && e.kind !== "tournament");
+      timer = setTimeout(run, anyLive ? 60e3 : 15 * 60e3);
+    };
+    async function run() {
+      if (running) return;
+      running = true;
+      try {
+        const { events: ev, offline } = await loadAll();
+        if (cancelled) return;
+        if (offline) {
+          // Kein Netz: zuletzt gespeicherten Stand behalten
+          const c = readCache();
+          if (!eventsRef.current.length) {
+            const fallback = c?.events ?? ev;
+            eventsRef.current = fallback; setEvents(fallback);
+          }
+          setOfflineSince(c?.ts ?? new Date());
+        } else {
+          eventsRef.current = ev; setEvents(ev); saveCache(ev); setOfflineSince(null);
+        }
+        setStatus("ok");
+      } catch {
+        if (!cancelled && !eventsRef.current.length) setStatus("error");
+      } finally {
+        running = false;
+        if (!cancelled) schedule();
+      }
+    }
+    run();
+
+    const wake = () => { if (document.visibilityState === "visible") run(); };
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    return () => {
+      cancelled = true; clearTimeout(timer);
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", wake);
+    };
   }, []);
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
@@ -408,6 +637,9 @@ export default function App() {
             <span style={S.counter}><i style={S.liveDot} />{live.length} live</span>
           )}
         </div>
+        {offlineSince && (
+          <div style={S.offline}>Offline · Stand {day(offlineSince)}, {time(offlineSince)} Uhr</div>
+        )}
 
         {status === "ok" && (
           <div style={S.chips}>
@@ -492,6 +724,8 @@ function Termine({ events, now, onOpenLive }) {
                     </>
                   ) : e.score ? (
                     <span style={{ ...S.time, color: C.grey }}>{e.score}</span>
+                  ) : e.tbc ? (
+                    <span style={S.tbc}>vorläufig</span>
                   ) : (
                     <span style={S.time}>{time(e.start)}</span>
                   )}
@@ -502,6 +736,7 @@ function Termine({ events, now, onOpenLive }) {
                 {e.subtitle}
                 {ongoing && ` · ${tourDay(e.start, now)} · bis ${shortDate(e.end)}`}
               </div>
+              {tvFor(e) && <div style={S.tv}>TV · {tvFor(e)}</div>}
             </div>
           </div>
         );
@@ -547,7 +782,9 @@ function Live({ events, next }) {
                 <span style={S.liveStand}>{e.score}</span>
               </div>
             )}
-            {e.note && <div style={S.liveNote}>{e.note}</div>}
+            {(e.note || tvFor(e)) && (
+              <div style={S.liveNote}>{[e.note, tvFor(e) && "TV · " + tvFor(e)].filter(Boolean).join("  ·  ")}</div>
+            )}
           </div>
         );
       })}
@@ -610,6 +847,13 @@ const S = {
   rightCol: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 },
   time: { fontSize: 22, lineHeight: "24px", fontWeight: 700, letterSpacing: "-0.035em",
           fontVariantNumeric: "tabular-nums", color: C.ink, whiteSpace: "nowrap" },
+  tv: { fontSize: 11.5, lineHeight: "16px", fontWeight: 700, letterSpacing: "0.02em",
+        color: C.ink, opacity: 0.55, marginTop: 8 },
+  offline: { margin: "0 20px 8px", fontSize: 12, fontWeight: 600, color: C.liveInk,
+             background: C.liveTint, borderRadius: 10, padding: "7px 11px" },
+  tbc: { fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase",
+         color: C.grey, border: `1px dashed ${C.border}`, borderRadius: 999, padding: "4px 9px",
+         whiteSpace: "nowrap" },
   livePill: { display: "inline-flex", alignItems: "center", gap: 5, background: C.liveTint, color: C.liveInk,
               borderRadius: 999, padding: "3px 8px", fontSize: 10.5, fontWeight: 700,
               letterSpacing: "0.04em", textTransform: "uppercase" },
