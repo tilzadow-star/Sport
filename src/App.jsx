@@ -699,7 +699,12 @@ export default function App() {
   const toggleSport = (k) => setSelected((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
   const [now, setNow] = useState(new Date());
   const [offlineSince, setOfflineSince] = useState(null); // Zeitpunkt des angezeigten Stands, wenn offline
-  const touch = useRef({ x: 0, y: 0 });
+  const touch = useRef({ x: 0, y: 0, top: false });
+  const scrollRef = useRef(null);
+  const refreshRef = useRef(null);          // manuelles Neuladen (Herunterziehen)
+  const [pull, setPull] = useState(0);      // wie weit heruntergezogen (px)
+  const [refreshing, setRefreshing] = useState(false);
+  const PULL_TRIGGER = 64;
   const eventsRef = useRef([]);
 
   // Laden + automatisch aktualisieren: jede Minute, wenn etwas live läuft, sonst alle 15 Minuten.
@@ -741,6 +746,7 @@ export default function App() {
       }
     }
     run();
+    refreshRef.current = run;
 
     const wake = () => { if (document.visibilityState === "visible") run(); };
     document.addEventListener("visibilitychange", wake);
@@ -771,10 +777,31 @@ export default function App() {
     .filter((e) => isLive(e, now) && e.kind !== "tournament" && e.kind !== "matchday")
     .sort((a, b) => order.indexOf(a.sport) - order.indexOf(b.sport) || a.start - b.start);
 
-  const onTouchStart = (e) => { const t = e.touches[0]; touch.current = { x: t.clientX, y: t.clientY }; };
-  const onTouchEnd = (e) => {
+  // Touch: seitlich wischen = Tab wechseln, ganz oben herunterziehen = aktualisieren
+  const onTouchStart = (e) => {
+    const t = e.touches[0];
+    touch.current = { x: t.clientX, y: t.clientY, top: (scrollRef.current?.scrollTop ?? 0) <= 0 };
+  };
+  const onTouchMove = (e) => {
+    if (!touch.current.top || refreshing) return;
+    const t = e.touches[0];
+    const dx = t.clientX - touch.current.x, dy = t.clientY - touch.current.y;
+    if (dy > 0 && dy > Math.abs(dx)) setPull(Math.min(dy * 0.5, 100));
+    else if (pull) setPull(0);
+  };
+  const onTouchEnd = async (e) => {
     const t = e.changedTouches[0];
     const dx = t.clientX - touch.current.x, dy = t.clientY - touch.current.y;
+    if (pull >= PULL_TRIGGER && refreshRef.current) {
+      setRefreshing(true); setPull(0);
+      const t0 = Date.now();
+      try { await refreshRef.current(); } finally {
+        // kurz stehen lassen, damit man sieht, dass etwas passiert ist
+        setTimeout(() => setRefreshing(false), Math.max(0, 600 - (Date.now() - t0)));
+      }
+      return;
+    }
+    setPull(0);
     if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) setTab(dx < 0 ? "live" : "termine");
   };
 
@@ -811,7 +838,17 @@ export default function App() {
           </div>
         )}
 
-        <div style={S.scroll} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <div style={S.scroll} ref={scrollRef}
+          onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
+          {(pull > 0 || refreshing) && (
+            <div style={{ ...S.pullBox, height: refreshing ? 48 : pull }}>
+              <span style={{ ...S.spinner, ...(refreshing ? { animation: "spin .8s linear infinite" }
+                : { transform: `rotate(${pull * 3.6}deg)`, opacity: Math.min(pull / PULL_TRIGGER, 1) }) }} />
+              <span style={S.pullText}>
+                {refreshing ? "Wird aktualisiert …" : pull >= PULL_TRIGGER ? "Loslassen zum Aktualisieren" : "Zum Aktualisieren ziehen"}
+              </span>
+            </div>
+          )}
           {status === "loading" && <p style={S.note}>Termine werden geladen …</p>}
           {status === "error" && <p style={S.note}>Konnte die Termine nicht laden. Verbindung prüfen und neu laden.</p>}
           {status === "ok" && tab === "termine" && (
@@ -1125,7 +1162,7 @@ function Live({ events, next }) {
 //  STYLES  –  Design 4a "Kachel"
 // ============================================================
 const FONT = `@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap');`;
-const KEYS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}@keyframes fadein{from{opacity:0}to{opacity:1}}@keyframes slideup{from{transform:translateY(100%)}to{transform:translateY(0)}}`;
+const KEYS = `@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}@keyframes fadein{from{opacity:0}to{opacity:1}}@keyframes slideup{from{transform:translateY(100%)}to{transform:translateY(0)}}@keyframes spin{to{transform:rotate(360deg)}}`;
 const GLOBAL = `*{box-sizing:border-box}html,body,#root{margin:0;padding:0;min-height:100%;background:#F4F4F1;text-align:left;}`;
 
 const C = {
@@ -1189,7 +1226,12 @@ const S = {
     color: on ? color : C.ink, opacity: dim ? 0.45 : 1 }),
   chipDot: { width: 7, height: 7, borderRadius: "50%", flexShrink: 0 },
 
-  scroll: { flex: 1, minHeight: 0, overflowY: "auto", padding: "0 16px 110px" },
+  scroll: { flex: 1, minHeight: 0, overflowY: "auto", padding: "0 16px 110px", overscrollBehaviorY: "contain" },
+  pullBox: { display: "flex", alignItems: "center", justifyContent: "center", gap: 10, overflow: "hidden",
+    transition: "height .15s ease-out" },
+  spinner: { width: 18, height: 18, borderRadius: "50%", border: `2.5px solid ${C.border}`,
+    borderTopColor: C.ink, display: "inline-block" },
+  pullText: { fontSize: 12.5, fontWeight: 600, color: C.grey },
   note: { color: C.grey, fontSize: 14, padding: "24px 4px", lineHeight: 1.5 },
 
   dayLabel: { fontSize: 12.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
