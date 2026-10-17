@@ -71,6 +71,10 @@ function scoreOf(m) {
   const fin = (m.matchResults || []).find((r) => r.resultTypeID === 2) || (m.matchResults || [])[0];
   return fin ? `${fin.pointsTeam1}:${fin.pointsTeam2}` : null;
 }
+// Deutsche Vereine erkennen (für Champions League / Europa League / Conference League)
+const GERMAN_CLUBS = /bayern|dortmund|bvb|leverkusen|leipzig|frankfurt|eintracht|stuttgart|wolfsburg|gladbach|mönchengladbach|freiburg|hoffenheim|union berlin|mainz|bremen|werder|augsburg|köln|hamburger|hsv|heidenheim|st\.? pauli|bochum|hertha|schalke/i;
+const isGermanClub = (name) => GERMAN_CLUBS.test(name || "");
+
 async function getFootball() {
   const now = new Date();
   let leagues = [];
@@ -82,7 +86,9 @@ async function getFootball() {
   const blSeason = now.getMonth() >= 6 ? now.getFullYear() : now.getFullYear() - 1;
   const targets = [
     { fixed: { leagueShortcut: "bl1", leagueSeason: blSeason }, label: "Bundesliga" },
-    { rx: /champions.?league/i, label: "Champions League" },
+    { rx: /champions.?league/i, label: "Champions League", intl: true },
+    { rx: /europa.?league/i,    label: "Europa League",    intl: true },
+    { rx: /conference.?league/i, label: "Conference League", intl: true },
     { rx: /dfb.?pokal/i,        label: "DFB-Pokal" },
   ];
   const out = [];
@@ -109,13 +115,31 @@ async function getFootball() {
           matchday: m.group?.groupOrderID ?? 999, // Spieltag / Runde
         };
       });
-      // kommende Spiele nach Spieltag gruppieren und die nächsten 2 Spieltage komplett zeigen
+      // Die nächsten 2 Spieltage (inkl. bereits gespielter Partien dieser Spieltage)
       const upcomingM = events.filter((e) => e.end >= new Date(now.getTime() - 3 * 3600e3));
       const mdays = [...new Set(upcomingM.map((e) => e.matchday))].sort((a, b) => a - b).slice(0, 2);
-      const next = upcomingM
-        .filter((e) => mdays.includes(e.matchday))
-        .sort((a, b) => a.start - b.start);
-      out.push(...next);
+      for (const md of mdays) {
+        const games = events.filter((e) => e.matchday === md).sort((a, b) => a.start - b.start);
+        if (!games.length) continue;
+        // Einzelspiele: nur für Live-Ansicht – bei internationalen Wettbewerben Spiele
+        // deutscher Teams zusätzlich als eigene Kachel in "Termine"
+        for (const g of games) {
+          g.kind = "match";
+          if (t.intl && g.rows.some((r) => isGermanClub(r.name))) {
+            g.pin = true; g.major = true; g.badgeLabel = "Deutsches Team";
+          }
+        }
+        out.push(...games);
+        // Eine Kachel pro Spieltag
+        const name = games[0].note || `${md}. Spieltag`;
+        out.push({
+          id: `fbmd-${lg.leagueShortcut}-${lg.leagueSeason}-${md}`, sport: "fussball", kind: "matchday",
+          comp: t.label, title: `${t.label} · ${name}`,
+          subtitle: `${games.length} ${games.length === 1 ? "Spiel" : "Spiele"}`,
+          start: games[0].start, end: new Date(Math.max(...games.map((g) => g.end))),
+          games,
+        });
+      }
     } catch { /* Liga überspringen */ }
   }
   return out;
@@ -484,7 +508,10 @@ function readCache() {
     const { ts, events } = JSON.parse(raw);
     return {
       ts: new Date(ts),
-      events: events.map((e) => ({ ...e, start: new Date(e.start), end: new Date(e.end) })),
+      events: events.map((e) => ({
+        ...e, start: new Date(e.start), end: new Date(e.end),
+        ...(e.games ? { games: e.games.map((g) => ({ ...g, start: new Date(g.start), end: new Date(g.end) })) } : {}),
+      })),
     };
   } catch { return null; }
 }
@@ -577,7 +604,13 @@ function tvFor(e) {
         if (wd === 6 && h < 17) return "Sky · Konferenz DAZN"; // Samstag 15:30
         return "Sky";                                       // Freitag, Samstag 18:30
       }
+      if (e.kind === "matchday") {
+        if (e.comp === "Bundesliga") return "Sky / DAZN";
+        if (e.comp === "Champions League") return "DAZN / Prime Video";
+        if (e.comp === "DFB-Pokal") return "Sky · ausgewählte Spiele ARD/ZDF";
+      }
       if (e.comp === "Champions League") return wd === 2 ? "DAZN / Prime Video" : "DAZN";
+      if (e.comp === "Europa League" || e.comp === "Conference League") return "RTL+";
       if (e.comp === "DFB-Pokal") return "Sky";
       return null;
     default: return null;
@@ -679,7 +712,8 @@ export default function App() {
 
   const present = Object.keys(SPORTS).filter((k) => events.some((e) => e.sport === k));
   const base = selected.length ? events.filter((e) => selected.includes(e.sport)) : events;
-  const upcoming = base.filter((e) => e.end >= now && e.kind !== "match");
+  // Termine: keine Einzelspiele (die stecken in der Spieltag-Kachel) – außer Spiele deutscher Teams international
+  const upcoming = base.filter((e) => e.end >= now && (e.kind !== "match" || e.pin));
   const order = Object.keys(SPORTS);
   // Welche Turniere haben gerade echte Live-Spiele? (Tennis pro Turnier, Golf gesamt)
   const liveKeys = new Set(
@@ -687,7 +721,7 @@ export default function App() {
       .map((e) => (e.sport === "tennis" ? "ten:" + e.tkey : e.sport))
   );
   const live = base
-    .filter((e) => isLive(e, now) && e.kind !== "tournament")
+    .filter((e) => isLive(e, now) && e.kind !== "tournament" && e.kind !== "matchday")
     .sort((a, b) => order.indexOf(a.sport) - order.indexOf(b.sport) || a.start - b.start);
 
   const onTouchStart = (e) => { const t = e.touches[0]; touch.current = { x: t.clientX, y: t.clientY }; };
@@ -792,6 +826,8 @@ function FilterSheet({ sports, selected, onToggle, onReset, onClose }) {
 }
 
 function Termine({ events, now, liveKeys, onOpenLive }) {
+  const [openIds, setOpenIds] = useState([]); // aufgeklappte Spieltag-Kacheln
+  const toggleOpen = (id) => setOpenIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   if (!events.length) return <p style={S.note}>Keine anstehenden Veranstaltungen.</p>;
   // Laufende mehrtägige Events (Start vor heute) unter "Heute" einsortieren
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -812,10 +848,14 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
         lastKey = key;
         // Mehrtägige Turniere: nur LIVE, wenn gerade wirklich ein Spiel/eine Runde läuft
         // (Tennis: Live-Match dieses Turniers; Golf: Live-Leaderboard). Sonst neutral "läuft".
-        const multi = e.kind === "tournament" && e.end - e.start > 20 * 3600e3;
+        const isMd = e.kind === "matchday";
+        const multi = (e.kind === "tournament" || isMd) && e.end - e.start > 20 * 3600e3;
         const inWindow = isLive(e, now);
-        const live = multi ? inWindow && liveKeys.has(e.tkey ? "ten:" + e.tkey : e.sport) : inWindow;
+        const live = isMd
+          ? e.games.some((g) => isLive(g, now))
+          : multi ? inWindow && liveKeys.has(e.tkey ? "ten:" + e.tkey : e.sport) : inWindow;
         const running = multi && inWindow && !live;
+        const open = isMd && openIds.includes(e.id);
         return (
           <div key={e.id}>
             {showDay && (
@@ -826,8 +866,8 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
                   : { marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.border}` }),
               }}>{dayLabel(d, now)}</div>
             )}
-            <div style={{ ...S.card, ...(live ? { cursor: "pointer" } : null) }}
-              onClick={live ? onOpenLive : undefined}>
+            <div style={{ ...S.card, ...(live || isMd ? { cursor: "pointer" } : null) }}
+              onClick={isMd ? () => toggleOpen(e.id) : live ? onOpenLive : undefined}>
               <div style={S.cardTop}>
                 <span style={S.pillWrap}>
                   <span style={{ ...S.pill, background: s.color, color: "#fff" }}>
@@ -855,10 +895,35 @@ function Termine({ events, now, liveKeys, onOpenLive }) {
               <div style={S.cardTitle}>{e.title}</div>
               <div style={S.cardSub}>
                 {e.subtitle}
-                {ongoing && ` · ${tourDay(e.start, now)} · bis ${shortDate(e.end)}`}
+                {isMd
+                  ? ` · ${multi ? `${shortDate(e.start)} – ${shortDate(e.end)}` : day(e.start)}`
+                  : ongoing && ` · ${tourDay(e.start, now)} · bis ${shortDate(e.end)}`}
               </div>
+              {open && (
+                <div style={S.games}>
+                  {e.games.map((g) => {
+                    const gl = isLive(g, now);
+                    return (
+                      <div key={g.id} style={S.gameRow}>
+                        <span style={S.gameWhen}>
+                          {g.start.toLocaleDateString("de-DE", { weekday: "short" }).replace(".", "")} {time(g.start)}
+                        </span>
+                        <span style={S.gameTeams}>
+                          <span style={{ fontWeight: g.pin ? 700 : 600 }}>{g.title}</span>
+                          {tvFor(g) && <span style={S.gameTv}>{tvFor(g)}</span>}
+                        </span>
+                        <span style={{ ...S.gameScore, color: gl ? C.liveInk : g.finished ? C.ink : C.grey }}>
+                          {gl ? (g.score || "LIVE") : g.finished ? g.score : "–:–"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               <div style={S.cardFoot}>
-                <span style={S.tv}>{tvFor(e) ? `TV · ${tvFor(e)}` : ""}</span>
+                <span style={S.tv}>
+                  {isMd ? (open ? "Spiele ausblenden ▴" : "Alle Spiele anzeigen ▾") : tvFor(e) ? `TV · ${tvFor(e)}` : ""}
+                </span>
                 <button style={S.calBtn} aria-label="In Kalender eintragen"
                   onClick={(ev) => { ev.stopPropagation(); addToCalendar(e); }}>
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -1010,6 +1075,15 @@ const S = {
           fontVariantNumeric: "tabular-nums", color: C.ink, whiteSpace: "nowrap" },
   tv: { fontSize: 11.5, lineHeight: "16px", fontWeight: 700, letterSpacing: "0.02em",
         color: C.ink, opacity: 0.55 },
+  games: { marginTop: 14, borderTop: `1px solid ${C.border}` },
+  gameRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0",
+    borderBottom: `1px solid ${C.border}` },
+  gameWhen: { width: 58, flexShrink: 0, fontSize: 11.5, fontWeight: 600, color: C.grey,
+    fontVariantNumeric: "tabular-nums" },
+  gameTeams: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2, fontSize: 14,
+    letterSpacing: "-0.01em", color: C.ink },
+  gameTv: { fontSize: 11, fontWeight: 600, color: C.grey },
+  gameScore: { flexShrink: 0, fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
   cardFoot: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 10 },
   calBtn: { display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0, cursor: "pointer",
     border: `1px solid ${C.border}`, background: C.card, borderRadius: 999, padding: "5px 10px",
