@@ -93,7 +93,25 @@ async function getFootball() {
   return out;
 }
 
-// ---- QUELLE 3: Tennis – ATP + WTA (ESPN) ----
+// ---- QUELLE 3: Tennis – nur Grand Slams + Masters 1000 (ESPN) ----
+//  Reihenfolge wichtig: Roland Garros vor Paris prüfen.
+const TENNIS_TOURNEYS = [
+  { key: "ao",  rx: /australian open/i,                          title: "Australian Open",  city: "Melbourne",      badge: "Grand Slam" },
+  { key: "rg",  rx: /roland|french open/i,                       title: "French Open",      city: "Roland Garros, Paris", badge: "Grand Slam" },
+  { key: "wim", rx: /wimbledon/i,                                title: "Wimbledon",        city: "London",         badge: "Grand Slam" },
+  { key: "uso", rx: /us open/i,                                  title: "US Open",          city: "New York",       badge: "Grand Slam" },
+  { key: "iw",  rx: /bnp paribas|indian wells/i,                 title: "Indian Wells",     city: "Kalifornien",    badge: "Masters 1000" },
+  { key: "mia", rx: /miami/i,                                    title: "Miami Open",       city: "Miami",          badge: "Masters 1000" },
+  { key: "mc",  rx: /monte.?carlo/i,                             title: "Monte-Carlo",      city: "Monaco",         badge: "Masters 1000" },
+  { key: "mad", rx: /madrid/i,                                   title: "Madrid Open",      city: "Madrid",         badge: "Masters 1000" },
+  { key: "rom", rx: /internazionali|italian open|\brome\b|\broma\b/i, title: "Rom",          city: "Foro Italico",   badge: "Masters 1000" },
+  { key: "can", rx: /national bank|canadian|toronto|montr[eé]al/i, title: "Canadian Open",  city: "Toronto / Montréal", badge: "Masters 1000" },
+  { key: "cin", rx: /cincinnati|western & southern/i,            title: "Cincinnati Open",  city: "Cincinnati",     badge: "Masters 1000" },
+  { key: "sha", rx: /shanghai/i,                                 title: "Shanghai Masters", city: "Shanghai",       badge: "Masters 1000" },
+  { key: "par", rx: /paris/i,                                    title: "Paris Masters",    city: "Paris",          badge: "Masters 1000" },
+];
+const tennisTourney = (name) => TENNIS_TOURNEYS.find((t) => t.rx.test(name || ""));
+
 async function getTennis() {
   const tours = ["atp", "wta"];
   const tournaments = new Map();
@@ -105,13 +123,15 @@ async function getTennis() {
       data = await r.json();
     } catch { continue; }
     for (const ev of data?.events ?? []) {
+      const tt = tennisTourney(ev.name);
+      if (!tt) continue; // alles außer Grand Slams und Masters 1000 ignorieren
       const start = new Date(ev.date);
       const end = new Date(ev.endDate || ev.date);
-      if (!tournaments.has(ev.name)) {
-        tournaments.set(ev.name, {
-          id: "ten-" + ev.id, sport: "tennis", kind: "tournament",
-          title: ev.name, subtitle: ev.major ? "Grand Slam" : "ATP/WTA",
-          start, end, major: !!ev.major, badgeLabel: "Grand Slam",
+      if (!tournaments.has(tt.key)) {
+        tournaments.set(tt.key, {
+          id: "ten-" + ev.id, sport: "tennis", kind: "tournament", tkey: tt.key,
+          title: tt.title, subtitle: `${tt.badge} · ${tt.city}`,
+          start, end, major: true, badgeLabel: tt.badge,
         });
       }
       for (const g of ev.groupings ?? []) {
@@ -131,12 +151,12 @@ async function getTennis() {
             return `${a}-${b}`;
           }).join("  ");
           const round = c.round?.displayName;
-          const label = `${ev.name}${round ? " · " + round : ""}`;
+          const label = `${tt.title}${round ? " · " + round : ""}`;
           liveMatches.push({
             id: "tenm-" + c.id, sport: "tennis", kind: "match", liveOnly: true,
             title: `${n1} – ${n2}`, comp: label, subtitle: label,
             rows: [{ name: n1, score: setStr(cs[0]) }, { name: n2, score: setStr(cs[1]) }],
-            note: round || ev.name,
+            note: round || tt.title,
             start: new Date(c.startDate || c.date),
             end: new Date(Date.now() + 3 * 3600e3),
             score: sets || "läuft",
@@ -183,31 +203,46 @@ async function getGolf() {
 // ---- QUELLE 5: übrige Sportarten (gepflegte Liste) ----
 //  Golf-Majors als feste Termine (Datumsfenster typisch; bei Bedarf anpassen).
 const iso = (s) => new Date(s);
+
+// Tennis: Grand Slams + Masters 1000 (ATP-Kalender; laufende Turniere kommen zusätzlich live von ESPN)
+const TENNIS_DATES = [
+  ["par", "2026-10-31", "2026-11-08"],
+  ["ao",  "2027-01-17", "2027-01-31"],
+  ["iw",  "2027-03-03", "2027-03-14"],
+  ["mia", "2027-03-17", "2027-03-28"],
+  ["mc",  "2027-04-04", "2027-04-11"],
+  ["mad", "2027-04-21", "2027-05-02"],
+  ["rom", "2027-05-05", "2027-05-16"],
+  ["rg",  "2027-05-23", "2027-06-06"],
+  ["wim", "2027-06-28", "2027-07-11"],
+  ["can", "2027-08-01", "2027-08-12"],
+  ["cin", "2027-08-12", "2027-08-23"],
+  ["uso", "2027-08-29", "2027-09-12"],
+  ["sha", "2027-10-06", "2027-10-17"],
+  ["par", "2027-10-30", "2027-11-07"],
+];
+const TENNIS_CURATED = TENNIS_DATES.map(([key, s, e]) => {
+  const t = TENNIS_TOURNEYS.find((x) => x.key === key);
+  return {
+    id: `ten-${key}-${s.slice(0, 4)}`, sport: "tennis", kind: "tournament", tkey: key,
+    major: true, badgeLabel: t.badge, title: t.title, subtitle: `${t.badge} · ${t.city}`,
+    start: iso(`${s}T11:00:00`), end: iso(`${e}T23:59:00`),
+  };
+});
+
 const CURATED = [
-  // Tennis Grand Slams 2027 (feste Termine; laufende Turniere kommen live von ESPN)
-  { id: "ten-ao-27", sport: "tennis", kind: "tournament", major: true, badgeLabel: "Grand Slam",
-    title: "Australian Open", subtitle: "Grand Slam · Melbourne",
-    start: iso("2027-01-17T11:00:00"), end: iso("2027-01-31T23:59:00") },
-  { id: "ten-rg-27", sport: "tennis", kind: "tournament", major: true, badgeLabel: "Grand Slam",
-    title: "French Open", subtitle: "Grand Slam · Roland Garros, Paris",
-    start: iso("2027-05-23T11:00:00"), end: iso("2027-06-06T23:59:00") },
-  { id: "ten-wim-27", sport: "tennis", kind: "tournament", major: true, badgeLabel: "Grand Slam",
-    title: "Wimbledon", subtitle: "Grand Slam · London",
-    start: iso("2027-06-28T12:00:00"), end: iso("2027-07-11T23:59:00") },
-  { id: "ten-uso-27", sport: "tennis", kind: "tournament", major: true, badgeLabel: "Grand Slam",
-    title: "US Open", subtitle: "Grand Slam · New York",
-    start: iso("2027-08-29T17:00:00"), end: iso("2027-09-12T23:59:00") },
+  ...TENNIS_CURATED,
   { id: "golf-masters", sport: "golf", kind: "tournament", major: true, badgeLabel: "Major",
-    title: "The Masters", subtitle: "Augusta National",
+    title: "The Masters", subtitle: "Augusta National, Georgia",
     start: iso("2027-04-08T15:00:00"), end: iso("2027-04-11T23:00:00") },
   { id: "golf-pga", sport: "golf", kind: "tournament", major: true, badgeLabel: "Major",
-    title: "PGA Championship", subtitle: "Golf Major",
-    start: iso("2027-05-13T15:00:00"), end: iso("2027-05-16T23:00:00") },
+    title: "PGA Championship", subtitle: "PGA Frisco, Texas",
+    start: iso("2027-05-20T15:00:00"), end: iso("2027-05-23T23:00:00") },
   { id: "golf-usopen", sport: "golf", kind: "tournament", major: true, badgeLabel: "Major",
-    title: "U.S. Open", subtitle: "Golf Major",
+    title: "U.S. Open", subtitle: "Pebble Beach, Kalifornien",
     start: iso("2027-06-17T15:00:00"), end: iso("2027-06-20T23:00:00") },
   { id: "golf-open", sport: "golf", kind: "tournament", major: true, badgeLabel: "Major",
-    title: "The Open Championship", subtitle: "Golf Major",
+    title: "The Open Championship", subtitle: "Old Course, St Andrews",
     start: iso("2027-07-15T12:00:00"), end: iso("2027-07-18T22:00:00") },
   // Triathlon – nur Langdistanz (Ironman/Challenge), im Stream/TV übertragen
   { id: "tri-703wm-26", sport: "triathlon", kind: "tournament", major: true, badgeLabel: "WM",
@@ -254,6 +289,38 @@ const CURATED = [
     start: iso("2027-03-11T10:00:00"), end: iso("2027-03-14T16:00:00") },
   { id: "bia-oslo", sport: "biathlon", kind: "tournament", title: "Oslo Holmenkollen", subtitle: "Biathlon Weltcup · Finale",
     start: iso("2027-03-18T10:00:00"), end: iso("2027-03-21T16:00:00") },
+  // Biathlon Weltcup 2027/28 (IBU-Kalender bis 2030; Wettkampftage innerhalb der IBU-Wochen)
+  { id: "bia-oestersund-27", sport: "biathlon", kind: "tournament", title: "Östersund", subtitle: "Biathlon Weltcup · Auftakt 2027/28",
+    start: iso("2027-11-28T10:00:00"), end: iso("2027-12-05T16:00:00") },
+  { id: "bia-kontiolahti-27", sport: "biathlon", kind: "tournament", title: "Kontiolahti", subtitle: "Biathlon Weltcup",
+    start: iso("2027-12-09T10:00:00"), end: iso("2027-12-12T16:00:00") },
+  { id: "bia-otepaa-27", sport: "biathlon", kind: "tournament", title: "Otepää", subtitle: "Biathlon Weltcup",
+    start: iso("2027-12-16T10:00:00"), end: iso("2027-12-19T16:00:00") },
+  // Darts – PDC-Kalender 2027
+  { id: "dar-masters-27", sport: "darts", kind: "tournament", title: "World Masters", subtitle: "PDC · Milton Keynes",
+    start: iso("2027-01-27T19:00:00"), end: iso("2027-01-31T23:00:00") },
+  { id: "dar-pl-start-27", sport: "darts", kind: "tournament", title: "Premier League · Auftakt", subtitle: "PDC · Night 1",
+    start: iso("2027-02-04T20:00:00"), end: iso("2027-02-04T23:30:00") },
+  { id: "dar-ukopen-27", sport: "darts", kind: "tournament", major: true, badgeLabel: "Major", title: "UK Open", subtitle: "PDC · Minehead",
+    start: iso("2027-03-05T12:00:00"), end: iso("2027-03-07T23:00:00") },
+  { id: "dar-pl-final-27", sport: "darts", kind: "tournament", major: true, badgeLabel: "Finale", title: "Premier League Finals", subtitle: "PDC · London",
+    start: iso("2027-05-27T20:00:00"), end: iso("2027-05-27T23:30:00") },
+  { id: "dar-wcup-27", sport: "darts", kind: "tournament", title: "World Cup of Darts", subtitle: "PDC · Frankfurt",
+    start: iso("2027-06-10T19:00:00"), end: iso("2027-06-13T23:00:00") },
+  { id: "dar-euopen-27", sport: "darts", kind: "tournament", title: "European Open", subtitle: "PDC · Salzburg",
+    start: iso("2027-06-18T19:00:00"), end: iso("2027-06-20T23:00:00") },
+  { id: "dar-matchplay-27", sport: "darts", kind: "tournament", major: true, badgeLabel: "Major", title: "World Matchplay", subtitle: "PDC · Blackpool",
+    start: iso("2027-07-17T19:00:00"), end: iso("2027-07-25T23:00:00") },
+  { id: "dar-wsf-27", sport: "darts", kind: "tournament", title: "World Series Finals", subtitle: "PDC · Amsterdam",
+    start: iso("2027-09-16T19:00:00"), end: iso("2027-09-19T23:00:00") },
+  { id: "dar-wgp-27", sport: "darts", kind: "tournament", title: "World Grand Prix", subtitle: "PDC · Leicester",
+    start: iso("2027-09-27T19:00:00"), end: iso("2027-10-03T23:00:00") },
+  { id: "dar-em-27", sport: "darts", kind: "tournament", title: "European Championship", subtitle: "PDC · Dortmund",
+    start: iso("2027-10-26T19:00:00"), end: iso("2027-10-31T23:00:00") },
+  { id: "dar-grandslam-27", sport: "darts", kind: "tournament", major: true, badgeLabel: "Major", title: "Grand Slam of Darts", subtitle: "PDC · Wolverhampton",
+    start: iso("2027-11-06T13:00:00"), end: iso("2027-11-14T23:00:00") },
+  { id: "dar-pcf-27", sport: "darts", kind: "tournament", title: "Players Championship Finals", subtitle: "PDC · Minehead",
+    start: iso("2027-11-26T12:00:00"), end: iso("2027-11-28T23:00:00") },
   { id: "dar-wgp", sport: "darts", kind: "tournament", title: "World Grand Prix", subtitle: "PDC · Leicester",
     start: iso("2026-09-28T19:00:00"), end: iso("2026-10-04T23:00:00") },
   { id: "dar-grandslam", sport: "darts", kind: "tournament", major: true, badgeLabel: "Major", title: "Grand Slam of Darts", subtitle: "PDC · Wolverhampton",
@@ -268,19 +335,25 @@ const CURATED = [
 async function loadAll() {
   const results = await Promise.allSettled([getF1(), getFootball(), getTennis(), getGolf()]);
   const live = results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
-  // Läuft ein Grand Slam bereits live (ESPN), den gleichnamigen festen Eintrag desselben Jahres weglassen
+  // Läuft ein Turnier bereits live (ESPN), den festen Eintrag desselben Turniers/Jahres weglassen
   const liveTennis = new Set(
     live.filter((e) => e.sport === "tennis" && e.kind === "tournament")
-        .map((e) => e.title + "|" + e.start.getFullYear())
+        .map((e) => e.tkey + "|" + e.start.getFullYear())
   );
   const curated = CURATED.filter(
-    (e) => !(e.sport === "tennis" && liveTennis.has(e.title + "|" + e.start.getFullYear()))
+    (e) => !(e.sport === "tennis" && liveTennis.has(e.tkey + "|" + e.start.getFullYear()))
   );
   return [...live, ...curated].sort((a, b) => a.start - b.start);
 }
 // ---- Helfer ----
 const day = (d) => d.toLocaleDateString("de-DE", { weekday: "long", day: "2-digit", month: "long" });
 const time = (d) => d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+const shortDate = (d) => d.toLocaleDateString("de-DE", { weekday: "short", day: "numeric", month: "short" }).replace(/\./g, "");
+const tourDay = (start, now) => {
+  const a = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const b = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return `Tag ${Math.round((b - a) / 864e5) + 1}`;
+};
 function isLive(e, now) {
   if (now < e.start) return false;
   if (e.finished === true) return false;
@@ -374,12 +447,20 @@ export default function App() {
 
 function Termine({ events, now, onOpenLive }) {
   if (!events.length) return <p style={S.note}>Keine anstehenden Veranstaltungen.</p>;
+  // Laufende mehrtägige Events (Start vor heute) unter "Heute" einsortieren
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const items = events
+    .map((e) => {
+      const ongoing = e.start < todayStart;
+      return { e, ongoing, d: ongoing ? todayStart : e.start };
+    })
+    .sort((a, b) => a.d - b.d || a.e.start - b.e.start);
   let lastKey = "";
   return (
     <div style={{ paddingTop: 2 }}>
-      {events.map((e) => {
+      {items.map(({ e, ongoing, d }) => {
         const s = SPORTS[e.sport];
-        const key = e.start.toDateString();
+        const key = d.toDateString();
         const showDay = key !== lastKey;
         const first = lastKey === "";
         lastKey = key;
@@ -392,7 +473,7 @@ function Termine({ events, now, onOpenLive }) {
                 ...(first
                   ? { marginTop: 4 }
                   : { marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.border}` }),
-              }}>{dayLabel(e.start, now)}</div>
+              }}>{dayLabel(d, now)}</div>
             )}
             <div style={{ ...S.card, ...(live ? { cursor: "pointer" } : null) }}
               onClick={live ? onOpenLive : undefined}>
@@ -417,7 +498,10 @@ function Termine({ events, now, onOpenLive }) {
                 </span>
               </div>
               <div style={S.cardTitle}>{e.title}</div>
-              <div style={S.cardSub}>{e.subtitle}</div>
+              <div style={S.cardSub}>
+                {e.subtitle}
+                {ongoing && ` · ${tourDay(e.start, now)} · bis ${shortDate(e.end)}`}
+              </div>
             </div>
           </div>
         );
